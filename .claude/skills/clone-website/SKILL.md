@@ -221,7 +221,7 @@ confident parity findings.
 The common measurement envelope is small and kind-specific. Initial supported
 kinds are route inventory, control observations, route-scoped runtime classes,
 compiled CSS classes, coverage, motion/state evidence, region-scoped visual
-evidence, Chromium DOMSnapshot evidence, and the two audits. Preserve per-route
+evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot evidence, and the two audits. Preserve per-route
 provenance before aggregating class observations; one route's development CSS
 cannot represent another route.
 

@@ -5,8 +5,9 @@ import { compareMotionObservations } from './motion.mjs';
 import { domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareVisualRegionImages, visualRoutePath } from './visual-regions.mjs';
 import { compareResponsiveEvidence, hydrateResponsiveEvidence } from './responsive.mjs';
+import { compareAssetEvidence, hydrateAssetEvidence } from './assets.mjs';
 
-const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation', 'dom-snapshot-observation', 'responsive-observation', 'responsive-observation-index']);
+const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation', 'dom-snapshot-observation', 'responsive-observation', 'responsive-observation-index', 'asset-observation', 'asset-observation-index']);
 const METADATA_KINDS = new Set(['policy-snapshot', 'failure', 'route-failure', 'report']);
 const CONTROL_EFFECT_DIMENSIONS = new Set(['url', 'aria', 'overlay', 'dom', 'style', 'network']);
 const FINDING_SEMANTICS = {
@@ -334,7 +335,7 @@ function unsupportedKinds(sourceManifest, cloneManifest) {
   return kinds.filter((kind) => kind && !SUPPORTED_KINDS.has(kind) && !METADATA_KINDS.has(kind)).map((kind) => ({ kind, status: 'unsupported' }));
 }
 
-export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceMotion = null, cloneMotion = null, sourceDomSnapshot = null, cloneDomSnapshot = null, sourceResponsive = null, cloneResponsive = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
+export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceMotion = null, cloneMotion = null, sourceDomSnapshot = null, cloneDomSnapshot = null, sourceResponsive = null, cloneResponsive = null, sourceAssets = null, cloneAssets = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
   if (!CONCRETE_RUN_ID.test(sourceRunId) || !CONCRETE_RUN_ID.test(cloneRunId)) {
     throw new Error('Comparisons require concrete source and clone run IDs');
   }
@@ -344,6 +345,7 @@ export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceContro
   const visualComparison = compareVisualRegions({ root, siteKey, source: sourceVisual, clone: cloneVisual, sourceRunId, cloneRunId, reportRunId });
   const motionComparison = compareMotionObservations(sourceMotion, cloneMotion, sourceRunId, cloneRunId);
   const responsiveComparison = compareResponsiveEvidence(sourceResponsive, cloneResponsive, sourceRunId, cloneRunId);
+  const assetComparison = compareAssetEvidence(sourceAssets, cloneAssets, sourceRunId, cloneRunId);
   const comparisonRoutes = [...new Set([...(sourceRoutes?.routes ?? []), ...(cloneRoutes?.routes ?? [])].map((route) => route.route).filter(Boolean))];
   const sourceDomCoverage = domSnapshotCoverage(sourceDomSnapshot, comparisonRoutes);
   const cloneDomCoverage = domSnapshotCoverage(cloneDomSnapshot, comparisonRoutes);
@@ -354,19 +356,20 @@ export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceContro
     expectedRoutes: comparisonRoutes,
     complete: Boolean(sourceDomCoverage.complete && cloneDomCoverage.complete && sourceDomCoverage.routesMatch && cloneDomCoverage.routesMatch),
   };
-  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings, ...motionComparison.findings, ...responsiveComparison.findings];
+  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings, ...motionComparison.findings, ...responsiveComparison.findings, ...assetComparison.findings];
   return {
     schemaVersion: 1,
     semantics: FINDING_SEMANTICS,
     sourceRunId,
     cloneRunId,
     supportedKinds: [...SUPPORTED_KINDS],
-    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage, ...motionComparison.comparatorCoverage, ...responsiveComparison.comparatorCoverage],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage, ...motionComparison.comparatorCoverage, ...responsiveComparison.comparatorCoverage, ...assetComparison.comparatorCoverage],
     findings,
     visualCoverage: visualComparison.coverage,
     motionCoverage: motionComparison.coverage,
     domSnapshotCoverage: domSnapshotComparison,
     responsiveCoverage: responsiveComparison.coverage,
+    assetCoverage: assetComparison.coverage,
     visualArtifacts: visualComparison.visualArtifacts,
   };
 }
@@ -454,11 +457,15 @@ export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneR
   const cloneResponsiveIndex = readOptionalJson(root, siteKey, cloneManifest, 'measurements/responsive.json');
   const sourceResponsive = hydrateResponsiveEvidence({ root, siteKey, runId: sourceRunId, index: sourceResponsiveIndex });
   const cloneResponsive = hydrateResponsiveEvidence({ root, siteKey, runId: cloneRunId, index: cloneResponsiveIndex });
+  const sourceAssetsIndex = readOptionalJson(root, siteKey, sourceManifest, 'measurements/assets.json');
+  const cloneAssetsIndex = readOptionalJson(root, siteKey, cloneManifest, 'measurements/assets.json');
+  const sourceAssets = hydrateAssetEvidence({ root, siteKey, runId: sourceRunId, index: sourceAssetsIndex });
+  const cloneAssets = hydrateAssetEvidence({ root, siteKey, runId: cloneRunId, index: cloneAssetsIndex });
   const sourceAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: sourceRunId, auditRunId: sourceAuditRunId, policy });
   const cloneAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: cloneRunId, auditRunId: cloneAuditRunId, policy });
   const sourceControlAudit = sourceAuditSelection?.bundle ?? null;
   const cloneControlAudit = cloneAuditSelection?.bundle ?? null;
-  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceMotion, cloneMotion, sourceDomSnapshot, cloneDomSnapshot, sourceResponsive, cloneResponsive, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
+  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceMotion, cloneMotion, sourceDomSnapshot, cloneDomSnapshot, sourceResponsive, cloneResponsive, sourceAssets, cloneAssets, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
   return {
     ...report,
     source: { runId: sourceRunId, target: sourceManifest.target, scope: sourceManifest.scope },
@@ -499,6 +506,7 @@ function inferFindingComparator(finding) {
   if (category === 'visual-region-incomplete') return comparator('visual-region', 'visual-region', 'pixels', finding?.comparator?.mode ?? 'informational');
   if (category.startsWith('motion-')) return comparator('motion', 'motion', category.replace(/^motion-(?:source|clone)-|^motion-/u, '').replace(/-mismatch$/u, ''), finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category.startsWith('responsive-')) return comparator('responsive', finding?.comparator?.evidenceClass ?? 'responsive', finding?.policy?.dimension ?? finding?.comparator?.dimension ?? null, finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
+  if (category.startsWith('asset-')) return comparator('assets', finding?.comparator?.evidenceClass ?? 'asset', finding?.policy?.dimension ?? finding?.comparator?.dimension ?? null, finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   return null;
 }
 
@@ -519,6 +527,7 @@ function comparatorSubjectsMatch(instrument, expected = {}, actual = {}) {
   if (instrument === 'responsive') return (expected.route ?? null) === (actual.route ?? null)
     && (expected.condition ?? null) === (actual.condition ?? null)
     && canonicalJson(expected.viewport ?? null) === canonicalJson(actual.viewport ?? null);
+  if (instrument === 'assets') return (expected.route ?? null) === (actual.route ?? null);
   return (expected.route ?? null) === (actual.route ?? null);
 }
 

@@ -32,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.9.0
+AI Website Cloner parity CLI v0.10.0
 
 Usage:
   npm run cloner -- <command> [options]
@@ -70,6 +70,7 @@ Measure options:
   --motion-sample               Capture deterministic Web Animations API samples with --motion
   --dom-snapshot                Capture Chromium CDP DOMSnapshot evidence
   --responsive                  Discover responsive CSS conditions and probe px thresholds
+  --assets                      Capture network assets and DOM/CSS asset associations
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -303,6 +304,7 @@ async function commandMeasure(options) {
     motionSample: Boolean(options['motion-sample']),
     domSnapshot: Boolean(options['dom-snapshot']),
     responsive: Boolean(options.responsive),
+    assets: Boolean(options.assets),
   });
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, coverage: result.coverage });
 }
@@ -483,7 +485,8 @@ function commandDiff(options) {
         responsiveCoverageComplete: report.responsiveCoverage.complete === true,
       } : {}),
     },
-    ...(report.responsiveCoverage?.configured ? { responsive: report.responsiveCoverage } : {}),
+      ...(report.responsiveCoverage?.configured ? { responsive: report.responsiveCoverage } : {}),
+    ...(report.assetCoverage?.configured ? { assets: report.assetCoverage } : {}),
     scope: 'comparison',
   }, { kind: 'coverage' });
   const closed = closeRun(root, siteKey, reportRunId);
