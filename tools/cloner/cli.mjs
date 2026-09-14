@@ -63,7 +63,7 @@ Measure options:
   --profile-id <id>              Non-secret profile label for the manifest
   --inventory-run <run-id|current>  Existing immutable inventory for a subset measurement
   --inventory                     Declare this requested route set as the authoritative inventory
-  --resume-run <run-id>           Reuse compatible completed route evidence from a failed run
+  --resume-run <run-id>           Reuse compatible clone route evidence from a failed run
   --server existing|managed      Clone server mode (default: existing)
   --hydration-selector <css>     Optional explicit clone hydration marker
   --visual-regions <path>        Versioned region-scoped visual measurement config
@@ -484,6 +484,7 @@ function commandDiff(options) {
       ...(report.responsiveCoverage?.configured ? {
         responsiveRoutesCompared: report.responsiveCoverage.routesCompared ?? 0,
         responsiveMediaProbesCompared: report.responsiveCoverage.mediaProbesCompared ?? 0,
+        responsiveLayoutProbesCompared: report.responsiveCoverage.layoutProbesCompared ?? 0,
         responsiveCoverageComplete: report.responsiveCoverage.complete === true,
       } : {}),
     },

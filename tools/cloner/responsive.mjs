@@ -494,6 +494,7 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
   let mediaConditionsCompared = 0;
   let containerConditionsCompared = 0;
   let mediaProbesCompared = 0;
+  let layoutProbesCompared = 0;
 
   for (const route of routes) {
     const sourceRoute = sourceRoutes.get(route);
@@ -566,6 +567,35 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
     const sourceProbes = probeMap(sourceObservation);
     const cloneProbes = probeMap(cloneObservation);
     const commonProbeKeys = [...sourceProbes.keys()].filter((key) => cloneProbes.has(key)).sort();
+    for (const key of commonProbeKeys) {
+      const sourceProbe = sourceProbes.get(key);
+      const cloneProbe = cloneProbes.get(key);
+      const subject = { route, viewport: sourceProbe.probe.requestedViewport };
+      const comparator = responsiveComparator('responsive-layout-probe', 'layout', 'gate');
+      const sourceSummary = sourceProbe.probe.summary ?? null;
+      const cloneSummary = cloneProbe.probe.summary ?? null;
+      const complete = sourceProbe.probe.status === 'captured'
+        && cloneProbe.probe.status === 'captured'
+        && sourceSummary !== null
+        && cloneSummary !== null;
+      comparatorCoverage.push({ comparator, subject, complete });
+      if (!complete) continue;
+      layoutProbesCompared += 1;
+      if (canonicalJson(sourceSummary) !== canonicalJson(cloneSummary)) {
+        findings.push({
+          category: 'responsive-layout-mismatch',
+          subject,
+          status: 'open',
+          policy: { dimension: 'layout', mode: 'gate' },
+          comparator,
+          observed: { source: sourceSummary, clone: cloneSummary },
+          evidence: {
+            source: routeEvidence(sourceRoute, sourceRunId, `#/probes/${sourceProbe.index}/summary`),
+            clone: routeEvidence(cloneRoute, cloneRunId, `#/probes/${cloneProbe.index}/summary`),
+          },
+        });
+      }
+    }
     for (const condition of commonMedia) {
       for (const key of commonProbeKeys) {
         const sourceProbe = sourceProbes.get(key);
@@ -637,6 +667,7 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
       mediaConditionsCompared,
       containerConditionsCompared,
       mediaProbesCompared,
+      layoutProbesCompared,
     },
   };
 }

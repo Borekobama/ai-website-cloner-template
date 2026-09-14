@@ -344,6 +344,7 @@ function measurementModules({ normalizedVisualConfig, motion, motionSample, domS
 }
 
 export function assertResumeCompatibility(manifest, { target, origin, profileId, tenant, role, policyHash, modules, viewport, deviceScaleFactor, visualConfigSha256, hydrationSelector, repository }) {
+  if (target === 'source') throw new Error('Source resume is disabled until source deployment fingerprint support is implemented');
   if (manifest.status !== 'failed') throw new Error(`Resume source must be a failed run: ${manifest.runId}`);
   if (manifest.kind !== target || manifest.target?.kind !== target) throw new Error(`Resume run target does not match ${target}: ${manifest.runId}`);
   if (manifest.engine?.version !== ENGINE_VERSION) throw new Error(`Resume run engine version does not match ${ENGINE_VERSION}: ${manifest.runId}`);

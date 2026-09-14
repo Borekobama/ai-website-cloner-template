@@ -108,11 +108,11 @@ Resume compatible completed routes after a failed measurement:
 npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --resume-run "$FAILED_RUN"
 ```
 
-Resume accepts only failed runs with matching repository identity, target origin,
-identity context, policy, engine version, hydration selector, viewport, and
-measurement modules. Source resumes also require the same non-secret
-`--profile-id`; profile paths never persist. Reused route artifacts remain
-immutable copies in new run. Routes without valid complete evidence run again.
+Resume accepts only failed clone runs with matching repository identity, target
+origin, identity context, policy, engine version, hydration selector, viewport,
+and measurement modules. Source resume stays disabled until source deployment
+fingerprint support exists. Profile paths never persist. Reused route artifacts
+remain immutable copies in new run. Routes without valid complete evidence run again.
 Use `--inventory` when resumed run must become authoritative.
 
 Source interactions are blocked unless `parity-exceptions.json` contains an

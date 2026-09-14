@@ -430,6 +430,7 @@ test('resume accepts redacted origins and rejects changed repository identity', 
   };
   assert.doesNotThrow(() => assertResumeCompatibility(manifest, compatible));
   assert.throws(() => assertResumeCompatibility(manifest, { ...compatible, repository: { ...manifest.repository, commit: 'def' } }), /repository identity/);
+  assert.throws(() => assertResumeCompatibility({ ...manifest, kind: 'source', target: { ...manifest.target, kind: 'source', profileId: 'profile-a' } }, { ...compatible, target: 'source', profileId: 'profile-a' }), /Source resume is disabled/);
 });
 
 test('coverage cannot close without inventory provenance', () => {
@@ -754,6 +755,23 @@ test('control presence coverage remains available after a missing duplicate is r
     cloneClasses: { routes: [] },
   });
   assert.equal(report.comparatorCoverage.some((entry) => entry.comparator.evidenceClass === 'control-presence'), true);
+});
+
+test('route diff gates unexpected final destinations', () => {
+  const report = compareMeasurementData({
+    sourceRunId: '20260913T000030Z_source_30303030',
+    cloneRunId: '20260913T000031Z_clone_31313131',
+    sourceRoutes: { routes: [{ route: '/home', finalUrl: 'https://source.test/home', status: 200 }] },
+    cloneRoutes: { routes: [{ route: '/home', finalUrl: 'https://clone.test/other', status: 200 }] },
+    sourceControls: { observations: [] },
+    cloneControls: { observations: [] },
+    sourceClasses: { routes: [] },
+    cloneClasses: { routes: [] },
+  });
+  const finding = report.findings.find((entry) => entry.category === 'route-destination-mismatch');
+  assert.equal(finding.status, 'open');
+  assert.deepEqual(finding.observed, { source: '/home', clone: '/other' });
+  assert.equal(finding.evidence.clone.locator, '#/routes/0/finalUrl');
 });
 
 test('control diff uses richer audit effects under policy and cites the audit runs', () => {

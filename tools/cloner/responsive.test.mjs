@@ -58,7 +58,7 @@ test('responsive probes use threshold minus one, exact threshold, and threshold 
   });
 });
 
-function responsiveBundle({ artifactPath, media = ['(min-width:768px)'], container = [], matches = [false, true, true], complete = true }) {
+function responsiveBundle({ artifactPath, media = ['(min-width:768px)'], container = [], matches = [false, true, true], visibleControlCount = 1, complete = true }) {
   const requestedWidths = [767, 768, 769];
   return {
     complete,
@@ -80,6 +80,13 @@ function responsiveBundle({ artifactPath, media = ['(min-width:768px)'], contain
           requestedViewport: { width, height: 720 },
           actualViewport: { width, height: 720, devicePixelRatio: 1 },
           mediaMatches: media.map((condition) => ({ condition, matches: matches[index] })),
+          summary: {
+            visibleControlCount,
+            controls: Array.from({ length: visibleControlCount }, (_, controlIndex) => ({ tag: 'button', role: 'button', name: `Control ${controlIndex}`, rect: { x: 0, y: controlIndex * 20, width: 80, height: 20 } })),
+            visibleLandmarkCount: 1,
+            landmarks: [{ tag: 'main', role: 'main', id: 'main', rect: { x: 0, y: 0, width: 1280, height: 720 }, display: 'block', position: 'static', flexDirection: 'row', gridTemplateColumns: 'none' }],
+            document: { scrollWidth: 1280, scrollHeight: 720, bodyWidth: 1280, bodyHeight: 720 },
+          },
         })),
       },
     }],
@@ -122,4 +129,15 @@ test('responsive comparison emits a provenance-backed media condition set findin
   assert.equal(finding.policy.mode, 'gate');
   assert.equal(finding.evidence.clone.artifact, 'measurements/responsive/clone.json');
   assert.equal(finding.evidence.clone.locator, '#/conditions/media');
+});
+
+test('responsive comparison catches layout changes under matching media conditions', () => {
+  const source = responsiveBundle({ artifactPath: 'measurements/responsive/source.json' });
+  const clone = responsiveBundle({ artifactPath: 'measurements/responsive/clone.json', visibleControlCount: 2 });
+  const report = compareResponsiveEvidence(source, clone, '20260914T030000Z_source_55555555', '20260914T030100Z_clone_66666666');
+  const finding = report.findings.find((entry) => entry.category === 'responsive-layout-mismatch');
+  assert.equal(finding.status, 'open');
+  assert.deepEqual(finding.subject.viewport, { width: 767, height: 720 });
+  assert.equal(report.coverage.layoutProbesCompared, 3);
+  assert.equal(finding.evidence.source.locator, '#/probes/0/summary');
 });
