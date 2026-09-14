@@ -2,7 +2,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
-import { chromium } from 'playwright';
+import { launchBrowser, launchPersistentContext } from './browser.mjs';
 import {
   closeRun,
   canonicalJson,
@@ -562,9 +562,9 @@ export async function measureTarget({
     if (profileDir) {
       const profilePath = resolve(profileDir);
       mkdirSync(profilePath, { recursive: true, mode: 0o700 });
-      context = await chromium.launchPersistentContext(profilePath, { headless: true, ...contextOptions });
+      context = await launchPersistentContext(profilePath, { headless: true, ...contextOptions });
     } else {
-      const browser = await chromium.launch({ headless: true, ...browserOptions });
+      const browser = await launchBrowser({ headless: true, ...browserOptions });
       context = await browser.newContext(contextOptions);
       context.__clonerBrowser = browser;
     }
