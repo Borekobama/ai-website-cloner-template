@@ -22,7 +22,7 @@ A reusable template for reverse-engineering any website into a clean, modern Nex
 
 ## Tech Stack
 - **Framework:** Next.js 16 (App Router, React 19, TypeScript strict)
-- **UI:** shadcn/ui (Radix primitives, Tailwind CSS v4, `cn()` utility)
+- **UI:** shadcn/ui (Base UI primitives, Tailwind CSS v4, `cn()` utility)
 - **Icons:** Lucide React (default — will be replaced/supplemented by extracted SVGs)
 - **Styling:** Tailwind CSS v4 with oklch design tokens
 - **Deployment:** Vercel
@@ -52,6 +52,9 @@ A reusable template for reverse-engineering any website into a clean, modern Nex
 src/
   app/              # Next.js routes
   components/       # React components
+    sites/<site-key>/
+      shared/        # Shared same-site reconstructed UI
+      <page-key>/    # Page-specific reconstructed UI
     ui/             # shadcn/ui primitives
     icons.tsx       # Extracted SVG icons as React components
   lib/
@@ -59,12 +62,13 @@ src/
   types/            # TypeScript interfaces
   hooks/            # Custom React hooks
 public/
-  images/           # Downloaded images from target site
-  videos/           # Downloaded videos from target site
-  seo/              # Favicons, OG images, webmanifest
+  sites/<site-key>/
+    shared/          # Shared same-site assets
+    <page-key>/      # Page-specific assets
 docs/
-  research/         # Inspection output (design tokens, components, layout)
-  design-references/ # Screenshots and visual references
+  research/<site-key>/<page-key>/ # Namespaced inspection output and component specs
+  research/<site-key>/_parity/    # Immutable runs, reports, and findings ledger
+  design-references/<site-key>/<page-key>/ # Namespaced screenshots and visual references
 scripts/            # Asset download scripts
 ```
 
@@ -73,11 +77,81 @@ scripts/            # Asset download scripts
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
 
+## Parity workflow (v0.5.1)
+
+The repository-owned parity spine lives under `tools/cloner/` and is invoked
+with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,
+installed command reference. The normal flow is:
+
+```text
+measure → immutable run → audit dead-controls/dead-classes → diff → repair → measure again
+```
+
+Each measurement creates a new run under
+`docs/research/<site-key>/_parity/runs/<run-id>/`. Closed and failed runs are
+immutable. `current` is only a convenience ref; findings and reports must
+always store the resolved concrete run ID. A subset run must identify its
+inventory provenance and must not replace a broader run. Only an explicit
+`measure --inventory` run defines an authoritative denominator and may advance
+`source-current` or `clone-current`; ordinary measurements remain `ad-hoc`, and
+`--inventory-run` measurements retain that inventory's denominator without
+promoting themselves.
+
+Source interactions require an explicit safe-action policy in
+`parity-exceptions.json`; blocked controls may be inventoried but must not be
+executed. Browser observations are redacted before serialization and hashing.
+Keep authenticated profiles in `.cloner-profiles/` and never commit them.
+
+For durable revisit commands, resolve and preserve concrete immutable IDs from
+the measurement output instead of leaving `current` in reports:
+
+```bash
+SOURCE_RUN=20260914T120000Z_source_0123abcd
+CLONE_RUN=20260914T120100Z_clone_89abcdef
+npm run cloner -- audit dead-controls --site example.test-01234567 --target source --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+SOURCE_AUDIT=20260914T120200Z_audit-controls_2345bcde
+npm run cloner -- audit dead-controls --site example.test-01234567 --target clone --run "$CLONE_RUN"
+CLONE_AUDIT=20260914T120300Z_audit-controls_3456cdef
+npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN" --source-audit "$SOURCE_AUDIT" --clone-audit "$CLONE_AUDIT"
+```
+
+Machine measurements are evidence. Component specifications remain derived
+builder contracts for the reconstruction workflow and do not override an
+immutable measurement. Initial visual QA is an additional signal; a clone is
+reported with a parity milestone, run IDs, coverage, findings, exceptions and
+known gaps so it can be revisited later.
+
+Parity findings identify source-vs-clone mismatches. Clone-health findings
+identify clone implementation-quality observations. Clone-health findings do
+not automatically block a parity milestone when source and clone intentionally
+share a defect.
+
 # Website Inspection Guide
+
+This guide covers the visual/bootstrap side of cloning. For repeatable source
+and clone parity, use the repository-owned Playwright CLI first:
+
+```bash
+npm run cloner -- help
+npm run cloner -- selftest
+```
+
+The CLI's immutable run manifests and machine measurements are evidence. The
+Markdown documents below are builder guidance and derived research; they do
+not replace a run artifact. Keep the source/clone relationship, route scope,
+inventory run ID, and known exceptions visible when recording findings.
+
+Parity findings identify source-vs-clone mismatches. Clone-health findings
+identify clone implementation-quality observations. Clone-health findings do
+not automatically block a parity milestone when source and clone intentionally
+share a defect.
 
 ## How to Reverse-Engineer Any Website
 
-This guide outlines what to capture when inspecting a target website via Chrome MCP or browser DevTools.
+Use Chrome MCP or browser DevTools for exploratory visual inspection. Use
+Playwright through `tools/cloner` for authoritative measurements and automated
+interactions. Do not interact with an authenticated source until the
+safe-action policy classifies the control.
 
 ## Phase 1: Visual Audit
 
@@ -153,3 +227,28 @@ After inspection, create these files in `docs/research/`:
 3. `LAYOUT_ARCHITECTURE.md` — Page layouts, grid system, responsive behavior
 4. `INTERACTION_PATTERNS.md` — Animations, transitions, hover states
 5. `TECH_STACK_ANALYSIS.md` — What the site uses and our chosen equivalents
+
+## Parity measurement checklist
+
+Before accepting a parity milestone:
+
+- [ ] `npm run cloner -- selftest` passes
+- [ ] Source measurement has a healthy session, expected tenant/workspace and role when configured
+- [ ] Clone measurement has a healthy server, loaded client JavaScript, and a hydrated route
+- [ ] Source and clone each have a new immutable run with exact commit/dirty-state identity
+- [ ] Authoritative baselines were explicitly measured with `--inventory`; ad-hoc/subset runs did not advance `current`
+- [ ] Requested route scope and authoritative inventory denominator/provenance are recorded in `coverage.json`
+- [ ] `audit dead-controls` uses actionability/trial checks, re-verifies source identity before every isolated source trial, and reports blocked, disabled, unreachable, trial-invalid, already-active and dead separately
+- [ ] Clone-health dead-control closure requires an exercised non-dead observation or a fully completed compatible route audit with the control absent; blocked-by-policy, trial-invalid, partial, and failed coverage cannot close it
+- [ ] Dead-class evidence records stylesheet readability counts and suppresses authoritative findings when `cssCoverageComplete` is false
+- [ ] Diff reports record comparator coverage plus selected control-audit IDs/covered routes; finding closure requires compatible reproducing evidence
+- [ ] Each dead-control occurrence is exercised from a fresh baseline context and the exact occurrence is re-located before policy/action
+- [ ] `audit dead-classes` preserves route provenance and aggregates only after the requested sweep
+- [ ] `diff` preserves duplicate control occurrences, cites concrete run IDs, and uses gate/informational/ignore policies for richer action effects; network behavior is not a universal gate
+- [ ] Every run stores its normalized policy snapshot; conflicting equally specific source-action rules fail closed
+- [ ] Failed runs retain incrementally persisted completed-route evidence and accurately name failed routes
+- [ ] Findings are appended to `docs/research/<site-key>/_parity/ledger.jsonl`
+- [ ] Visual QA is reported as an additional signal, not as permanent completion
+
+Never use historical prose counts as fixture expectations. Freeze a failing
+instrument result with `fixture freeze` before repairing the instrument.

@@ -15,7 +15,7 @@ A reusable template for reverse-engineering any website into a clean, modern Nex
 
 ## Tech Stack
 - **Framework:** Next.js 16 (App Router, React 19, TypeScript strict)
-- **UI:** shadcn/ui (Radix primitives, Tailwind CSS v4, `cn()` utility)
+- **UI:** shadcn/ui (Base UI primitives, Tailwind CSS v4, `cn()` utility)
 - **Icons:** Lucide React (default — will be replaced/supplemented by extracted SVGs)
 - **Styling:** Tailwind CSS v4 with oklch design tokens
 - **Deployment:** Vercel
@@ -45,6 +45,9 @@ A reusable template for reverse-engineering any website into a clean, modern Nex
 src/
   app/              # Next.js routes
   components/       # React components
+    sites/<site-key>/
+      shared/        # Shared same-site reconstructed UI
+      <page-key>/    # Page-specific reconstructed UI
     ui/             # shadcn/ui primitives
     icons.tsx       # Extracted SVG icons as React components
   lib/
@@ -52,12 +55,13 @@ src/
   types/            # TypeScript interfaces
   hooks/            # Custom React hooks
 public/
-  images/           # Downloaded images from target site
-  videos/           # Downloaded videos from target site
-  seo/              # Favicons, OG images, webmanifest
+  sites/<site-key>/
+    shared/          # Shared same-site assets
+    <page-key>/      # Page-specific assets
 docs/
-  research/         # Inspection output (design tokens, components, layout)
-  design-references/ # Screenshots and visual references
+  research/<site-key>/<page-key>/ # Namespaced inspection output and component specs
+  research/<site-key>/_parity/    # Immutable runs, reports, and findings ledger
+  design-references/<site-key>/<page-key>/ # Namespaced screenshots and visual references
 scripts/            # Asset download scripts
 ```
 
@@ -65,5 +69,54 @@ scripts/            # Asset download scripts
 - When launching Claude Code agent teams, ALWAYS have each teammate work in their own worktree branch and merge everyone's work at the end, resolving any merge conflicts smartly since you are basically serving the orchestrator role and have full context to our goals, work given, work achieved, and desired outcomes.
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
+
+## Parity workflow (v0.5.1)
+
+The repository-owned parity spine lives under `tools/cloner/` and is invoked
+with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,
+installed command reference. The normal flow is:
+
+```text
+measure → immutable run → audit dead-controls/dead-classes → diff → repair → measure again
+```
+
+Each measurement creates a new run under
+`docs/research/<site-key>/_parity/runs/<run-id>/`. Closed and failed runs are
+immutable. `current` is only a convenience ref; findings and reports must
+always store the resolved concrete run ID. A subset run must identify its
+inventory provenance and must not replace a broader run. Only an explicit
+`measure --inventory` run defines an authoritative denominator and may advance
+`source-current` or `clone-current`; ordinary measurements remain `ad-hoc`, and
+`--inventory-run` measurements retain that inventory's denominator without
+promoting themselves.
+
+Source interactions require an explicit safe-action policy in
+`parity-exceptions.json`; blocked controls may be inventoried but must not be
+executed. Browser observations are redacted before serialization and hashing.
+Keep authenticated profiles in `.cloner-profiles/` and never commit them.
+
+For durable revisit commands, resolve and preserve concrete immutable IDs from
+the measurement output instead of leaving `current` in reports:
+
+```bash
+SOURCE_RUN=20260914T120000Z_source_0123abcd
+CLONE_RUN=20260914T120100Z_clone_89abcdef
+npm run cloner -- audit dead-controls --site example.test-01234567 --target source --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+SOURCE_AUDIT=20260914T120200Z_audit-controls_2345bcde
+npm run cloner -- audit dead-controls --site example.test-01234567 --target clone --run "$CLONE_RUN"
+CLONE_AUDIT=20260914T120300Z_audit-controls_3456cdef
+npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN" --source-audit "$SOURCE_AUDIT" --clone-audit "$CLONE_AUDIT"
+```
+
+Machine measurements are evidence. Component specifications remain derived
+builder contracts for the reconstruction workflow and do not override an
+immutable measurement. Initial visual QA is an additional signal; a clone is
+reported with a parity milestone, run IDs, coverage, findings, exceptions and
+known gaps so it can be revisited later.
+
+Parity findings identify source-vs-clone mismatches. Clone-health findings
+identify clone implementation-quality observations. Clone-health findings do
+not automatically block a parity milestone when source and clone intentionally
+share a defect.
 
 @docs/research/INSPECTION_GUIDE.md

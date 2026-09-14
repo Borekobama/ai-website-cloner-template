@@ -1,0 +1,579 @@
+import { mkdirSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { resolve } from 'node:path';
+import { chromium } from 'playwright';
+import {
+  closeRun,
+  createRun,
+  createRunId,
+  failRun,
+  readArtifact,
+  readManifest,
+  setRef,
+  sha256,
+  updateRun,
+  writeArtifact,
+} from './run-store.mjs';
+import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
+import { redactForPersistence, safeUrl } from './redact.mjs';
+import { normalizePolicy, policySha256 } from './policy.mjs';
+import { runSelfTests } from './selftest.mjs';
+
+const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
+
+function routePath(url) {
+  try {
+    const pathname = new URL(url).pathname || '/';
+    return pathname.length > 1 ? pathname.replace(/\/$/u, '') : pathname;
+  } catch {
+    return '/';
+  }
+}
+
+function assertTargetUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Target URL is invalid: ${value}`);
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Target URL must use http or https');
+  return url;
+}
+
+export function sourceIdentity(page, expected = {}) {
+  return page.evaluate((requested) => {
+    const values = {
+      tenant: [
+        document.querySelector('[data-tenant]')?.getAttribute('data-tenant'),
+        document.querySelector('[data-workspace]')?.getAttribute('data-workspace'),
+        document.querySelector('meta[name="tenant"]')?.getAttribute('content'),
+      ].find(Boolean) ?? null,
+      role: [
+        document.querySelector('[data-role]')?.getAttribute('data-role'),
+        document.querySelector('meta[name="role"]')?.getAttribute('content'),
+      ].find(Boolean) ?? null,
+    };
+    const status = (requestedValue, observedValue) => {
+      if (requestedValue === undefined) return 'not-requested';
+      if (observedValue === null) return 'unverified';
+      return String(observedValue) === String(requestedValue) ? 'matched' : 'mismatched';
+    };
+    return {
+      tenant: values.tenant,
+      role: values.role,
+      requestedTenant: requested.tenant ?? null,
+      requestedRole: requested.role ?? null,
+      tenantStatus: status(requested.tenant, values.tenant),
+      roleStatus: status(requested.role, values.role),
+      tenantMatched: requested.tenant === undefined || values.tenant === requested.tenant,
+      roleMatched: requested.role === undefined || values.role === requested.role,
+    };
+  }, expected);
+}
+
+function assertProfileId(profileId) {
+  if (profileId !== undefined && profileId !== null && (!/^[a-z0-9][a-z0-9._-]*$/iu.test(String(profileId)) || /[\\/]/u.test(String(profileId)))) {
+    throw new Error('profileId must be a non-secret label, not a filesystem path');
+  }
+}
+
+export async function collectControls(page, route) {
+  return page.evaluate((currentRoute) => {
+    const selector = 'button, a, input, select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="switch"]';
+    const occurrences = new Map();
+    return [...document.querySelectorAll(selector)].map((element, index) => {
+      const role = element.getAttribute('role') || element.tagName.toLowerCase();
+      const name = (element.getAttribute('aria-label') || element.getAttribute('title') || element.textContent || element.getAttribute('placeholder') || element.getAttribute('name') || '').replace(/\s+/gu, ' ').trim().slice(0, 240);
+      const controlClass = element.getAttribute('data-control-class') || 'default';
+      const href = element.getAttribute('href');
+      const duplicateKey = JSON.stringify([role, name, controlClass]);
+      const occurrence = occurrences.get(duplicateKey) ?? 0;
+      occurrences.set(duplicateKey, occurrence + 1);
+      const parent = element.parentElement;
+      return {
+        route: currentRoute,
+        index,
+        occurrence,
+        role,
+        name,
+        visible: Boolean(element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden'),
+        enabled: !element.hasAttribute('disabled') && element.getAttribute('aria-disabled') !== 'true',
+        controlClass,
+        href,
+        state: element.getAttribute('aria-pressed') || element.getAttribute('aria-selected') || element.getAttribute('data-state'),
+        ariaState: {
+          pressed: element.getAttribute('aria-pressed'),
+          selected: element.getAttribute('aria-selected'),
+          expanded: element.getAttribute('aria-expanded'),
+          checked: element.getAttribute('aria-checked'),
+          hidden: element.getAttribute('aria-hidden'),
+          disabled: element.getAttribute('aria-disabled'),
+        },
+        structure: {
+          tag: element.tagName.toLowerCase(),
+          type: element.getAttribute('type'),
+          parentTag: parent?.tagName.toLowerCase() ?? null,
+          parentRole: parent?.getAttribute('role') ?? null,
+          childElementCount: element.children.length,
+        },
+      };
+    });
+  }, route);
+}
+
+export async function collectClasses(page, route) {
+  return page.evaluate((currentRoute) => {
+    const runtimeClasses = [...new Set([...document.querySelectorAll('[class]')].flatMap((element) => String(element.className || '').split(/\s+/u).filter(Boolean)))].sort();
+    const compiledClasses = new Set();
+    const stylesheetSources = [];
+    let stylesheetsReadable = 0;
+    let stylesheetsUnreadable = 0;
+    const classPattern = /\.((?:\\.|[A-Za-z_-])(?:\\.|[A-Za-z0-9_-])*)/gu;
+    const collectRules = (rules) => {
+      for (const rule of [...rules]) {
+        const text = rule.cssText || '';
+        for (const match of text.matchAll(classPattern)) {
+          compiledClasses.add(match[1].replace(/\\([0-9a-f]{1,6})\s?/giu, (_, codePoint) => String.fromCodePoint(Number.parseInt(codePoint, 16))).replace(/\\([^\n])/gu, '$1'));
+        }
+        if (rule.cssRules) collectRules(rule.cssRules);
+      }
+    };
+    for (const sheet of [...document.styleSheets]) {
+      stylesheetSources.push(sheet.href || 'inline');
+      try {
+        collectRules(sheet.cssRules);
+        stylesheetsReadable += 1;
+      } catch {
+        // Cross-origin CSSOM access is unavailable; the source is kept as a
+        // provenance marker and the route remains valid for other sheets.
+        stylesheetsUnreadable += 1;
+      }
+    }
+    return {
+      route: currentRoute,
+      runtimeClasses,
+      compiledClasses: [...compiledClasses].sort(),
+      stylesheetSources,
+      stylesheetsTotal: stylesheetSources.length,
+      stylesheetsReadable,
+      stylesheetsUnreadable,
+      cssCoverageComplete: stylesheetsUnreadable === 0,
+    };
+  }, route);
+}
+
+export async function runtimeHealth(page, kind, options = {}) {
+  const result = await page.evaluate((config) => {
+    const scripts = [...document.scripts].filter((script) => script.src || script.textContent?.trim());
+    const explicit = config.hydrationSelector ? Boolean(document.querySelector(config.hydrationSelector)) : null;
+    const explicitMarker = document.documentElement.getAttribute('data-hydrated');
+    const explicitFailure = explicitMarker === 'false' || Boolean(document.querySelector('[data-next-error], [data-hydration-error]'));
+    const nextRuntime = scripts.some((script) => /\/_next\//u.test(script.src) || /__next_f\.push/u.test(script.textContent ?? ''));
+    const reactAttached = [...document.querySelectorAll('html, body, #__next, [data-nextjs-scroll-focus-boundary], [data-reactroot], body *')]
+      .slice(0, 250)
+      .some((element) => Object.getOwnPropertyNames(element).some((key) => /^__react(?:Container|Fiber|Props)/u.test(key)));
+    const hydrationEvidence = explicit !== null
+      ? (explicit ? 'selector' : 'selector-missing')
+      : explicitMarker === 'true'
+        ? 'marker'
+        : reactAttached && nextRuntime
+          ? 'react-next-runtime'
+          : 'unverified';
+    const loginForm = [...document.querySelectorAll('input[type="password"], [autocomplete="current-password"]')]
+      .some((element) => Boolean(element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden'));
+    return {
+      serverHealthy: true,
+      clientJsLoaded: nextRuntime,
+      hydrated: !explicitFailure && ['selector', 'marker', 'react-next-runtime'].includes(hydrationEvidence),
+      hydrationEvidence,
+      explicitHydrationSelector: config.hydrationSelector ?? null,
+      reactAttached,
+      nextRuntime,
+      title: document.title,
+      bodyBytes: document.body?.innerHTML.length ?? 0,
+      framework: nextRuntime ? 'next' : reactAttached ? 'react' : null,
+      loginForm: loginForm || Boolean(document.querySelector('form[action*="login" i], form[action*="signin" i]')),
+      kind: config.kind,
+    };
+  }, { ...options, kind });
+  return result;
+}
+
+function createRequestTracker(page) {
+  const statuses = [];
+  const failures = [];
+  const onResponse = (response) => {
+    const request = response.request();
+    statuses.push({ url: safeUrl(response.url()), status: response.status(), resourceType: request.resourceType(), method: request.method() });
+  };
+  const onRequestFailed = (request) => {
+    failures.push({ url: safeUrl(request.url()), resourceType: request.resourceType(), error: request.failure()?.errorText ?? 'request failed' });
+  };
+  page.on('response', onResponse);
+  page.on('requestfailed', onRequestFailed);
+  return {
+    statuses,
+    failures,
+    stop() {
+      page.off('response', onResponse);
+      page.off('requestfailed', onRequestFailed);
+    },
+  };
+}
+
+async function findFreePort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      server.close((error) => error ? reject(error) : resolvePort(address.port));
+    });
+  });
+}
+
+async function waitForServer(url, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { redirect: 'manual' });
+      if (response.status < 500) return;
+      lastError = new Error(`Server returned ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error(`Managed clone server did not become healthy: ${lastError?.message ?? 'timeout'}`);
+}
+
+export async function startManagedCloneServer({ root = process.cwd(), port, command = 'dev', timeoutMs = 30000, cleanNext = true } = {}) {
+  const actualPort = port ?? await findFreePort();
+  if (cleanNext) rmSync(resolve(root, '.next'), { recursive: true, force: true });
+  const child = spawn('npm', ['run', command, '--', '--hostname', '127.0.0.1', '--port', String(actualPort)], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, BROWSER: 'none' },
+  });
+  let output = '';
+  child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
+  child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
+  const url = `http://127.0.0.1:${actualPort}`;
+  try {
+    await waitForServer(url, timeoutMs);
+  } catch (error) {
+    child.kill('SIGTERM');
+    throw new Error(`${error.message}${output ? `\n${output.slice(-1000)}` : ''}`);
+  }
+  return {
+    url,
+    process: child,
+    async stop() {
+      if (child.exitCode !== null) return;
+      child.kill('SIGTERM');
+      await new Promise((resolveStop) => {
+        const timer = setTimeout(() => { child.kill('SIGKILL'); resolveStop(); }, 5000);
+        child.once('exit', () => { clearTimeout(timer); resolveStop(); });
+      });
+    },
+  };
+}
+
+function routeUrl(baseUrl, route) {
+  const target = new URL(route, baseUrl);
+  if (target.origin !== new URL(baseUrl).origin) throw new Error(`Route must stay on target origin: ${route}`);
+  return target.toString();
+}
+
+function preconditionError(message, runId) {
+  const error = new Error(message);
+  error.runId = runId;
+  return error;
+}
+
+function readInventoryContext(root, siteKey, inventoryRunId, target, requestedRoutes) {
+  const manifest = readManifest(root, siteKey, inventoryRunId);
+  if (manifest.status !== 'closed') throw new Error(`Inventory run must be closed: ${inventoryRunId}`);
+  if (manifest.target?.kind && manifest.target.kind !== target) {
+    throw new Error(`Inventory run ${inventoryRunId} is a ${manifest.target.kind} run, not a ${target} run`);
+  }
+  if (manifest.scope?.inventoryRunId !== inventoryRunId || manifest.scope?.authoritativeInventory !== true) {
+    throw new Error(`Inventory run must be an explicit authoritative inventory: ${inventoryRunId}`);
+  }
+  const inventory = JSON.parse(readArtifact(root, siteKey, inventoryRunId, 'inventory.json').toString('utf8'));
+  const coverage = JSON.parse(readArtifact(root, siteKey, inventoryRunId, 'coverage.json').toString('utf8'));
+  if (inventory.runId !== inventoryRunId || coverage.inventory?.runId !== inventoryRunId || coverage.inventory?.authoritative !== true || coverage.scope !== 'full') {
+    throw new Error(`Inventory provenance is inconsistent for run ${inventoryRunId}`);
+  }
+  const routePaths = (inventory.routes ?? []).map((entry) => routePath(entry.route));
+  const inventoryRoutes = new Set(routePaths);
+  const missingRoutes = requestedRoutes.filter((route) => !inventoryRoutes.has(routePath(route)));
+  if (missingRoutes.length) {
+    throw new Error(`Requested routes are not present in inventory ${inventoryRunId}: ${missingRoutes.join(', ')}`);
+  }
+  return {
+    runId: inventoryRunId,
+    routes: inventory.routes.length,
+    routePaths,
+    authoritative: true,
+    ...(coverage.inventory?.controls !== undefined ? { controls: coverage.inventory.controls } : {}),
+  };
+}
+
+function routeArtifactKey(route, index) {
+  return `${String(index + 1).padStart(4, '0')}-${sha256(route).slice(0, 12)}`;
+}
+
+function identityFailure(identity) {
+  if (!identity) return null;
+  if (identity.tenantStatus === 'unverified') return 'tenant identity could not be verified from an explicit marker';
+  if (identity.tenantStatus === 'mismatched') return 'tenant identity does not match';
+  if (identity.roleStatus === 'unverified') return 'role identity could not be verified from an explicit marker';
+  if (identity.roleStatus === 'mismatched') return 'role identity does not match';
+  return null;
+}
+
+function criticalAuthFailures(statuses) {
+  return statuses.filter((entry) => (entry.status === 401 || entry.status === 403)
+    && ['document', 'script', 'stylesheet'].includes(entry.resourceType));
+}
+
+export async function measureTarget({
+  root = process.cwd(),
+  siteKey,
+  target = 'clone',
+  url,
+  routes = [],
+  profileDir,
+  tenant,
+  role,
+  profileId,
+  policy = {},
+  hydrationSelector = null,
+  allowUnauthenticated = false,
+  browserOptions = {},
+  server = null,
+  inventoryRunId = null,
+  authoritativeInventory = false,
+} = {}) {
+  await runSelfTests();
+  if (!siteKey) throw new Error('siteKey is required');
+  assertProfileId(profileId);
+  const base = assertTargetUrl(url);
+  if (!['source', 'clone'].includes(target)) throw new Error(`target must be source or clone, received ${target}`);
+  if (authoritativeInventory && inventoryRunId) throw new Error('authoritativeInventory cannot be combined with inventoryRunId');
+  const requestedRoutes = routes.length ? routes : [base.pathname || '/'];
+  const runId = createRunId(target);
+  const inventoryContext = inventoryRunId
+    ? readInventoryContext(root, siteKey, inventoryRunId, target, requestedRoutes)
+    : null;
+  const scope = {
+    inventoryRunId: authoritativeInventory ? runId : inventoryRunId,
+    authoritativeInventory: Boolean(authoritativeInventory),
+    routesRequested: requestedRoutes,
+    routesCompleted: [],
+    routesFailed: [],
+  };
+  createRun({
+    root,
+    siteKey,
+    runId,
+    kind: target,
+    target: { kind: target, origin: base.origin, profileId, tenant, role },
+    scope,
+    policySha256: policySha256(policy),
+  });
+  writeArtifact(root, siteKey, runId, 'policy.json', normalizePolicy(policy), { kind: 'policy-snapshot' });
+  let managedServer = null;
+  let context = null;
+  try {
+    let baseUrl = base.origin;
+    if (target === 'clone' && server === 'managed') {
+      managedServer = await startManagedCloneServer({ root });
+      baseUrl = managedServer.url;
+      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, profileId, tenant, role } });
+    }
+    if (target === 'source' && !profileDir) {
+      throw preconditionError('Source measurement requires a persistent browser profile', runId);
+    }
+    if (profileDir) {
+      const profilePath = resolve(profileDir);
+      mkdirSync(profilePath, { recursive: true, mode: 0o700 });
+      context = await chromium.launchPersistentContext(profilePath, { headless: true, ...browserOptions });
+    } else {
+      const browser = await chromium.launch({ headless: true, ...browserOptions });
+      context = await browser.newContext();
+      context.__clonerBrowser = browser;
+    }
+    const page = await context.newPage();
+    const routeRecords = [];
+    const controls = [];
+    const classObservations = [];
+    const requestsByRoute = [];
+    for (const [routeIndex, route] of requestedRoutes.entries()) {
+      const tracker = createRequestTracker(page);
+      const artifactKey = routeArtifactKey(route, routeIndex);
+      try {
+        let response;
+        try {
+          response = await page.goto(routeUrl(baseUrl, route), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch (error) {
+          throw preconditionError(`Route ${route} is unreachable: ${error instanceof Error ? error.message : String(error)}`, runId);
+        }
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        const finalUrl = page.url();
+        const pathname = routePath(finalUrl);
+        const expectedPath = routePath(routeUrl(baseUrl, route));
+        if (!response || response.status() >= 400) throw preconditionError(`Route ${route} returned ${response?.status() ?? 'no response'}`, runId);
+        if (target === 'source' && !allowUnauthenticated && LOGIN_PATH.test(pathname)) {
+          throw preconditionError(`Source session is expired or redirected to login at ${route}`, runId);
+        }
+        if (target === 'source' && !allowUnauthenticated && expectedPath !== pathname) {
+          throw preconditionError(`Source route ${route} resolved to unexpected state ${pathname}`, runId);
+        }
+        const health = await runtimeHealth(page, target, { hydrationSelector });
+        if (target === 'source' && !allowUnauthenticated && health.loginForm) {
+          throw preconditionError(`Source session is not authenticated on ${route}`, runId);
+        }
+        const chunkFailures = tracker.statuses.filter((entry) => entry.status >= 400 && /\/_next\/static\/chunks\//iu.test(entry.url));
+        const failedScripts = tracker.failures.filter((entry) => entry.resourceType === 'script' || /\/_next\/static\//iu.test(entry.url));
+        if (target === 'clone' && (!health.clientJsLoaded || !health.hydrated || chunkFailures.length || failedScripts.length)) {
+          throw preconditionError(`Clone runtime is not hydrated on ${route}; evidence=${health.hydrationEvidence}`, runId);
+        }
+        const identity = target === 'source' ? await sourceIdentity(page, { tenant, role }) : null;
+        const identityProblem = identityFailure(identity);
+        if (target === 'source' && !allowUnauthenticated && identityProblem) {
+          throw preconditionError(`Source ${identityProblem} on ${route}`, runId);
+        }
+        const critical = criticalAuthFailures(tracker.statuses);
+        if (target === 'source' && !allowUnauthenticated && critical.length) {
+          throw preconditionError(`Critical authenticated document/runtime request failed on ${route}`, runId);
+        }
+        const routeControls = await collectControls(page, route);
+        const routeClasses = await collectClasses(page, route);
+        const requestRecord = { route, requests: [...tracker.statuses], failures: [...tracker.failures] };
+        const routeRecord = {
+          route,
+          finalUrl: safeUrl(finalUrl),
+          status: response.status(),
+          title: health.title,
+          health,
+          identity,
+        };
+        writeArtifact(root, siteKey, runId, `measurements/routes/${artifactKey}.json`, routeRecord, { kind: 'route-observation' });
+        writeArtifact(root, siteKey, runId, `measurements/controls/${artifactKey}.json`, { route, observations: routeControls }, { kind: 'control-observation' });
+        writeArtifact(root, siteKey, runId, `measurements/classes/${artifactKey}.json`, routeClasses, { kind: 'runtime-class-observation' });
+        writeArtifact(root, siteKey, runId, `measurements/requests/${artifactKey}.json`, requestRecord, { kind: 'request-observation' });
+        controls.push(...routeControls);
+        classObservations.push(routeClasses);
+        requestsByRoute.push(requestRecord);
+        routeRecords.push(routeRecord);
+        scope.routesCompleted.push(route);
+        updateRun(root, siteKey, runId, { scope: { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed] } });
+      } catch (error) {
+        scope.routesFailed.push(route);
+        const failure = {
+          route,
+          message: error instanceof Error ? error.message : String(error),
+          requests: [...tracker.statuses],
+          requestFailures: [...tracker.failures],
+        };
+        try {
+          writeArtifact(root, siteKey, runId, `measurements/failures/${artifactKey}.json`, failure, { kind: 'route-failure' });
+          updateRun(root, siteKey, runId, { scope: { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed] } });
+        } catch {
+          // The original route failure remains decisive if partial evidence cannot be appended.
+        }
+        throw error;
+      } finally {
+        tracker.stop();
+      }
+    }
+    const audit = auditDeadRuntimeClasses(classObservations, { runId, scope: 'requested-routes' });
+    const completedScope = { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed] };
+    updateRun(root, siteKey, runId, { scope: completedScope });
+    writeArtifact(root, siteKey, runId, 'measurements/routes.json', {
+      schemaVersion: 1,
+      runId,
+      kind: 'route-inventory',
+      capturedAt: new Date().toISOString(),
+      routes: routeRecords,
+    }, { kind: 'route-inventory' });
+    if (authoritativeInventory) {
+      writeArtifact(root, siteKey, runId, 'inventory.json', {
+        schemaVersion: 1,
+        runId,
+        kind: 'route-inventory',
+        authoritative: true,
+        capturedAt: new Date().toISOString(),
+        routes: routeRecords.map(({ route, finalUrl, status, title }) => ({ route, finalUrl, status, title })),
+      }, { kind: 'route-inventory' });
+    }
+    writeArtifact(root, siteKey, runId, 'measurements/controls.json', {
+      schemaVersion: 1,
+      runId,
+      kind: 'control-observation',
+      capturedAt: new Date().toISOString(),
+      observations: controls,
+    }, { kind: 'control-observation' });
+    writeArtifact(root, siteKey, runId, 'measurements/classes.json', {
+      schemaVersion: 1,
+      runId,
+      kind: 'runtime-class-observation',
+      capturedAt: new Date().toISOString(),
+      routes: classObservations,
+      audit,
+    }, { kind: 'runtime-class-observation' });
+    writeArtifact(root, siteKey, runId, 'measurements/requests.json', {
+      schemaVersion: 1,
+      runId,
+      kind: 'request-observation',
+      routes: requestsByRoute,
+    }, { kind: 'request-observation' });
+    const inventory = inventoryContext
+      ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
+      : authoritativeInventory
+        ? { runId, routes: requestedRoutes.length, controls: controls.length, authoritative: true }
+        : { runId: null, routes: requestedRoutes.length, controls: controls.length, authoritative: false, source: 'requested-routes' };
+    const inventoryScope = inventoryContext
+      ? (requestedRoutes.length === inventoryContext.routePaths.length && requestedRoutes.every((route) => inventoryContext.routePaths.includes(routePath(route))) ? 'inventory-scope' : 'subset')
+      : authoritativeInventory ? 'full' : 'ad-hoc';
+    const coverage = {
+      schemaVersion: 1,
+      inventory,
+      measurement: {
+        routesRequested: requestedRoutes.length,
+        routesCompleted: routeRecords.length,
+        controlsDiscovered: controls.length,
+        controlsClassified: 0,
+        stylesheetsTotal: classObservations.reduce((sum, entry) => sum + (entry.stylesheetsTotal ?? 0), 0),
+        stylesheetsReadable: classObservations.reduce((sum, entry) => sum + (entry.stylesheetsReadable ?? 0), 0),
+        stylesheetsUnreadable: classObservations.reduce((sum, entry) => sum + (entry.stylesheetsUnreadable ?? 0), 0),
+        cssCoverageComplete: classObservations.every((entry) => entry.cssCoverageComplete !== false),
+      },
+      scope: inventoryScope,
+    };
+    writeArtifact(root, siteKey, runId, 'coverage.json', coverage, { kind: 'coverage' });
+    const closed = closeRun(root, siteKey, runId, { runtime: { serverHealthy: true, hydrated: target === 'clone' ? routeRecords.every((entry) => entry.health.hydrated) : null, authenticated: target === 'source' } });
+    if (authoritativeInventory) setRef(root, siteKey, `${target}-current`, runId);
+    return redactForPersistence({ manifest: closed, routes: routeRecords, audit, coverage });
+  } catch (error) {
+    try {
+      failRun(root, siteKey, runId, error);
+    } catch {
+      // Preserve the original precondition error if a partial run could not be finalized.
+    }
+    if (error && typeof error === 'object' && !error.runId) error.runId = runId;
+    throw error;
+  } finally {
+    if (context) {
+      const browser = context.__clonerBrowser;
+      await context.close().catch(() => {});
+      await browser?.close().catch(() => {});
+    }
+    await managedServer?.stop().catch(() => {});
+  }
+}

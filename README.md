@@ -108,27 +108,36 @@ Give your AI coding agent a URL and watch it recreate the website as a clean Nex
 ## Tech Stack
 
 - **Next.js 16** — App Router, React 19, TypeScript strict
-- **shadcn/ui** — Radix primitives + Tailwind CSS v4
+- **shadcn/ui** — Base UI primitives + Tailwind CSS v4
 - **Tailwind CSS v4** — oklch design tokens
 - **Lucide React** — default icons (replaced by extracted SVGs during cloning)
+- **Playwright** — first-party browser measurement for parity runs
 
 ## How It Works
 
-The `/clone-website` skill runs a multi-phase pipeline:
+The `/clone-website` skill runs a multi-phase bootstrap pipeline, then leaves
+the result ready for repeatable parity revisits:
 
 ```mermaid
 flowchart LR
     P1["1. Reconnaissance"] --> P2["2. Foundation"]
     P2 --> P3["3. Component Specs"]
     P3 --> P4["4. Parallel Build"]
-    P4 --> P5["5. Assembly and QA"]
+    P4 --> P5["5. Assembly and visual QA"]
+    P5 --> P6["6. Measure, audit, diff"]
 ```
 
 1. **Reconnaissance** — screenshots, design token extraction, interaction sweep (scroll, click, hover, responsive)
 2. **Foundation** — updates fonts, colors, globals, downloads all assets
-3. **Component Specs** — writes detailed spec files (`docs/research/components/`) with exact computed CSS values, states, behaviors, and content
+3. **Component Specs** — writes detailed namespaced spec files (`docs/research/<site-key>/<page-key>/components/`) with exact computed CSS values, states, behaviors, and content
 4. **Parallel Build** — dispatches builder agents in git worktrees, one per section/component
-5. **Assembly & QA** — merges worktrees, wires up the page, runs visual diff against the original
+5. **Assembly & visual QA** — merges worktrees, wires up the page, and compares the clone with the original
+6. **Parity spine** — records immutable source/clone runs, audits dead controls and runtime classes, compares supported measurements, and keeps an append-only findings ledger
+
+Parity findings identify source-vs-clone mismatches. Clone-health findings
+identify clone implementation-quality observations. Clone-health findings do
+not automatically block a parity milestone when source and clone intentionally
+share a defect.
 
 Each builder agent receives the full component specification inline — exact `getComputedStyle()` values, interaction models, multi-state content, responsive breakpoints, and asset paths. No guessing.
 
@@ -150,18 +159,22 @@ Each builder agent receives the full component specification inline — exact `g
 src/
   app/              # Next.js routes
   components/       # React components
+    sites/<site-key>/
+      shared/        # Shared same-site reconstructed UI
+      <page-key>/    # Page-specific reconstructed UI
     ui/             # shadcn/ui primitives
     icons.tsx       # Extracted SVG icons
   lib/utils.ts      # cn() utility
   types/            # TypeScript interfaces
   hooks/            # Custom React hooks
 public/
-  images/           # Downloaded images from target
-  videos/           # Downloaded videos from target
-  seo/              # Favicons, OG images
+  sites/<site-key>/
+    shared/          # Shared same-site assets
+    <page-key>/      # Page-specific assets
 docs/
-  research/         # Extraction output & component specs
-  design-references/ # Screenshots
+  research/<site-key>/<page-key>/ # Namespaced extraction output & component specs
+  research/<site-key>/_parity/    # Immutable parity runs, reports, and ledger
+  design-references/<site-key>/<page-key>/ # Namespaced screenshots
 scripts/
   sync-agent-rules.sh  # Regenerate agent instruction files
   sync-skills.mjs      # Regenerate /clone-website for all platforms
@@ -182,7 +195,53 @@ npm run build  # Production build
 npm run lint   # ESLint check
 npm run typecheck # TypeScript check
 npm run check  # Run lint + typecheck + build
+npm run cloner -- help # Exact parity CLI command reference
+npm run test:cloner # Cloner instrument self-tests
 ```
+
+### Revisit parity after the initial clone
+
+Install Chromium once for Playwright when browser measurement is needed:
+
+```bash
+npx playwright install chromium
+```
+
+Measure the source and clone. Use a persistent profile for an authenticated
+source, and keep it outside version control. The measurement commands print a
+`runId`; assign those returned values before running the audits or diff:
+
+```bash
+npm run cloner -- measure --target source --url https://example.test --site example.test-01234567 --profile .cloner-profiles/primary --tenant tenant-a --role admin --inventory
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --inventory
+# Use the concrete runId values returned by the two commands above.
+SOURCE_RUN=20260914T120000Z_source_0123abcd
+CLONE_RUN=20260914T120100Z_clone_89abcdef
+npm run cloner -- audit dead-controls --site example.test-01234567 --target source --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+SOURCE_AUDIT=20260914T120200Z_audit-controls_2345bcde
+npm run cloner -- audit dead-controls --site example.test-01234567 --target clone --run "$CLONE_RUN"
+CLONE_AUDIT=20260914T120300Z_audit-controls_3456cdef
+npm run cloner -- audit dead-classes --site example.test-01234567 --target clone --run "$CLONE_RUN"
+npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN" --source-audit "$SOURCE_AUDIT" --clone-audit "$CLONE_AUDIT"
+npm run cloner -- findings --site example.test-01234567
+```
+
+For a local credential-free browser smoke test of the complete fixture-backed
+measure → audit → diff → ledger repair flow, run:
+
+```bash
+npm run test:cloner:integration
+```
+
+Every measurement creates a new immutable run at
+`docs/research/<site-key>/_parity/runs/<run-id>/`. For read-side inspection,
+`current` is optional shorthand that resolves immediately to the concrete
+authoritative run ID in the target's current ref. For a durable revisit, copy
+the concrete source and clone run IDs from the measurement output and pass
+those IDs to audit/diff; reports and findings always persist concrete IDs. A
+narrower rerun cannot overwrite an earlier broader run. See
+[`tools/cloner/README.md`](tools/cloner/README.md) and
+[`SECURITY.md`](SECURITY.md) for policy, redaction, and profile guidance.
 
 ### If using docker
 

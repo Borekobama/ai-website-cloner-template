@@ -50,3 +50,27 @@ This template is intended for authorized development, migration, recovery, and
 learning. See [Not Intended For](README.md#not-intended-for) for prohibited
 uses. Reports about abuse or copied content should not include sensitive
 security details in public channels.
+
+## Browser profiles and parity evidence
+
+The v0.5 parity CLI supports persistent Playwright profiles for authenticated
+source measurement. Treat `.cloner-profiles/` as a credential store: keep it
+outside commits, backups shared with untrusted users, screenshots, and CI
+artifacts. Prefer a least-privileged account and a tenant/workspace dedicated
+to inspection.
+
+Source interactions are policy-gated. Put target-specific allowances and
+blocks in `parity-exceptions.json`; destructive or external-portal controls
+should be blocked. A blocked control may be inventoried without being clicked.
+
+The CLI redacts cookies, authorization headers, tokens, sensitive query
+parameters, payment-session URLs, and profile paths before an observation is
+serialized or hashed. Do not bypass the normal run store by writing raw browser
+objects to evidence. Closed and failed runs are immutable; remove credential-
+containing local profiles with your operating system's secure storage policy
+when they are no longer needed.
+
+Frozen fixtures are private by default under ignored `.cloner-runtime/fixtures/`.
+Promote a fixture into tracked `tools/cloner/fixtures/` only with the explicit
+`fixture freeze --public` option after confirming the persisted evidence is
+appropriate for public source control.

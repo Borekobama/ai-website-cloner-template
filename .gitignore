@@ -47,3 +47,7 @@ next-env.d.ts
 
 # Local temp files
 temp/
+
+# Authenticated browser state and local cloner runtime
+.cloner-profiles/
+.cloner-runtime/

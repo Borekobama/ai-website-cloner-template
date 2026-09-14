@@ -1,0 +1,461 @@
+import { CONCRETE_RUN_ID, listRuns, readArtifact, readManifest } from './run-store.mjs';
+import { comparatorForDimension, dimensionsForControl, policySha256 } from './policy.mjs';
+import { stableFindingId } from './ledger.mjs';
+
+const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit']);
+const METADATA_KINDS = new Set(['policy-snapshot', 'failure', 'route-failure', 'report']);
+const CONTROL_EFFECT_DIMENSIONS = new Set(['url', 'aria', 'overlay', 'dom', 'style', 'network']);
+const FINDING_SEMANTICS = {
+  parity: 'Parity findings identify source-vs-clone mismatches.',
+  cloneHealth: 'Clone-health findings identify clone implementation-quality observations.',
+  milestone: 'Clone-health findings do not automatically block a parity milestone when source and clone intentionally share a defect.',
+};
+
+function readJson(root, siteKey, runId, path) {
+  const bytes = readArtifact(root, siteKey, runId, path);
+  return JSON.parse(bytes.toString('utf8'));
+}
+
+function evidence(runId, artifact, locator) {
+  return { runId, artifact, locator };
+}
+
+function routeMap(value) {
+  return new Map((value?.routes ?? []).map((route) => [route.route, route]));
+}
+
+function normalizedDestination(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(value, 'http://cloner.invalid');
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return String(value);
+  }
+}
+
+function controlKey(control) {
+  return `${control.route ?? ''}|${control.role ?? ''}|${control.name ?? ''}|${control.controlClass ?? 'default'}`;
+}
+
+function indexedControls(value) {
+  const occurrences = new Map();
+  return (value?.observations ?? []).map((control, index) => {
+    const baseKey = controlKey(control);
+    const occurrence = occurrences.get(baseKey) ?? 0;
+    occurrences.set(baseKey, occurrence + 1);
+    return { control, index, baseKey, occurrence, key: `${baseKey}|#${occurrence}` };
+  });
+}
+
+function auditObservationMap(bundle) {
+  const byIndex = new Map();
+  if (!bundle?.routes) return byIndex;
+  for (const [routeIndex, routeAudit] of bundle.routes.entries()) {
+    for (const [observationIndex, observation] of (routeAudit.observations ?? []).entries()) {
+      byIndex.set(`${observation.route ?? routeAudit.route}|${observation.index}`, {
+        observation,
+        evidence: evidence(bundle.runId, 'audits/dead-controls.json', `#/routes/${routeIndex}/observations/${observationIndex}`),
+      });
+    }
+  }
+  return byIndex;
+}
+
+function richerValues(control, actionObservation, useActionEvidence) {
+  const after = useActionEvidence ? actionObservation?.evidence?.after : null;
+  const controlAfter = useActionEvidence ? actionObservation?.evidence?.controlAfter : null;
+  return {
+    url: useActionEvidence && actionObservation?.actionExecuted ? normalizedDestination(after?.url) : normalizedDestination(control.href),
+    aria: controlAfter?.ariaState ?? control.ariaState ?? control.state ?? null,
+    structure: control.structure ?? { role: control.role, name: control.name },
+    overlay: useActionEvidence ? { opened: Boolean(actionObservation?.effect?.overlayOpened), overlays: after?.overlays ?? [] } : null,
+    dom: useActionEvidence ? { changed: Boolean(actionObservation?.effect?.domChanged), fingerprint: after?.domFingerprint ?? null } : null,
+    style: controlAfter ? { visible: control.visible, className: controlAfter.className ?? null, dataState: controlAfter.dataState ?? null } : control.visible,
+    network: useActionEvidence ? {
+      count: after?.network?.count ?? 0,
+      requests: (after?.network?.requests ?? []).map((request) => ({
+        url: normalizedDestination(request.url),
+        method: request.method ?? null,
+        resourceType: request.resourceType ?? null,
+      })),
+    } : null,
+  };
+}
+
+function comparator(instrument, evidenceClass, dimension = null, mode = null) {
+  return { instrument, evidenceClass, ...(dimension ? { dimension } : {}), ...(mode ? { mode } : {}) };
+}
+
+function compareControls(source, clone, sourceRunId, cloneRunId, policy = {}, sourceAudit = null, cloneAudit = null) {
+  const sourceControls = indexedControls(source);
+  const cloneControls = indexedControls(clone);
+  const sourceByKey = new Map(sourceControls.map((entry) => [entry.key, entry]));
+  const cloneByKey = new Map(cloneControls.map((entry) => [entry.key, entry]));
+  const sourceAuditByIndex = auditObservationMap(sourceAudit);
+  const cloneAuditByIndex = auditObservationMap(cloneAudit);
+  const findings = [];
+  const comparatorCoverage = [];
+  const compared = new Set();
+  for (const sourceEntry of sourceControls) {
+    const cloneEntry = cloneByKey.get(sourceEntry.key);
+    const sourceControl = sourceEntry.control;
+    const sourceLocator = `#/observations/${sourceEntry.index}`;
+    const subject = { route: sourceControl.route, role: sourceControl.role, name: sourceControl.name, controlClass: sourceControl.controlClass ?? 'default', occurrence: sourceEntry.occurrence };
+    const presenceComparator = comparator('static-control', 'control-presence', 'presence', 'gate');
+    if (!cloneEntry) {
+      comparatorCoverage.push({ comparator: presenceComparator, subject });
+      findings.push({
+        category: 'missing-control',
+        subject,
+        status: 'open',
+        comparator: presenceComparator,
+        evidence: { source: evidence(sourceRunId, 'measurements/controls.json', sourceLocator), clone: null },
+      });
+      continue;
+    }
+    const cloneControl = cloneEntry.control;
+    compared.add(sourceEntry.key);
+    const cloneLocator = `#/observations/${cloneEntry.index}`;
+    comparatorCoverage.push({ comparator: presenceComparator, subject });
+    const dimensions = dimensionsForControl(policy, sourceControl.controlClass ?? 'default');
+    const sourceAction = sourceAuditByIndex.get(`${sourceControl.route}|${sourceControl.index}`)?.observation ?? null;
+    const cloneAction = cloneAuditByIndex.get(`${cloneControl.route}|${cloneControl.index}`)?.observation ?? null;
+    const useActionEvidence = Boolean(sourceAction?.actionExecuted && cloneAction?.actionExecuted);
+    const sourceValues = richerValues(sourceControl, sourceAction, useActionEvidence);
+    const cloneValues = richerValues(cloneControl, cloneAction, useActionEvidence);
+    for (const [dimension, mode] of Object.entries(dimensions)) {
+      const sourceValue = sourceValues[dimension] ?? null;
+      const cloneValue = cloneValues[dimension] ?? null;
+      const comparison = comparatorForDimension(mode, sourceValue, cloneValue);
+      const actionDimension = CONTROL_EFFECT_DIMENSIONS.has(dimension) && useActionEvidence;
+      const findingComparator = actionDimension
+        ? comparator('dead-controls', 'control-effect', dimension, mode)
+        : comparator('static-control', 'control-static', dimension, mode);
+      comparatorCoverage.push({ comparator: findingComparator, subject });
+      if (!comparison.equal && mode !== 'ignore') {
+        const sourceActionEvidence = sourceAuditByIndex.get(`${sourceControl.route}|${sourceControl.index}`)?.evidence;
+        const cloneActionEvidence = cloneAuditByIndex.get(`${cloneControl.route}|${cloneControl.index}`)?.evidence;
+        findings.push({
+          category: `control-${dimension}-mismatch`,
+          subject,
+          status: mode === 'gate' ? 'open' : 'informational',
+          policy: { controlClass: sourceControl.controlClass ?? 'default', dimension, mode },
+          comparator: findingComparator,
+          observed: { source: sourceValue, clone: cloneValue },
+          evidence: {
+            source: actionDimension && sourceActionEvidence ? sourceActionEvidence : evidence(sourceRunId, 'measurements/controls.json', sourceLocator),
+            clone: actionDimension && cloneActionEvidence ? cloneActionEvidence : evidence(cloneRunId, 'measurements/controls.json', cloneLocator),
+          },
+        });
+      }
+    }
+  }
+  for (const cloneEntry of cloneControls) {
+    if (!compared.has(cloneEntry.key) && !sourceByKey.has(cloneEntry.key)) {
+      const cloneControl = cloneEntry.control;
+      const subject = { route: cloneControl.route, role: cloneControl.role, name: cloneControl.name, controlClass: cloneControl.controlClass ?? 'default', occurrence: cloneEntry.occurrence };
+      const findingComparator = comparator('static-control', 'control-presence', 'presence', 'informational');
+      comparatorCoverage.push({ comparator: findingComparator, subject });
+      findings.push({
+        category: 'extra-control',
+        subject,
+        status: 'informational',
+        comparator: findingComparator,
+        evidence: { source: null, clone: evidence(cloneRunId, 'measurements/controls.json', `#/observations/${cloneEntry.index}`) },
+      });
+    }
+  }
+  return { findings, comparatorCoverage };
+}
+
+function compareRoutes(source, clone, sourceRunId, cloneRunId) {
+  const sourceRoutes = routeMap(source);
+  const cloneRoutes = routeMap(clone);
+  const findings = [];
+  const comparatorCoverage = [];
+  for (const route of new Set([...sourceRoutes.keys(), ...cloneRoutes.keys()])) {
+    const left = sourceRoutes.get(route);
+    const right = cloneRoutes.get(route);
+    const subject = { route };
+    const findingComparator = comparator('route-inventory', 'route-status', 'status', 'gate');
+    comparatorCoverage.push({ comparator: findingComparator, subject });
+    if (!left || !right) {
+      findings.push({
+        category: 'route-missing',
+        subject,
+        status: 'open',
+        comparator: findingComparator,
+        evidence: {
+          source: left ? evidence(sourceRunId, 'measurements/routes.json', `#/routes/${source.routes.indexOf(left)}`) : null,
+          clone: right ? evidence(cloneRunId, 'measurements/routes.json', `#/routes/${clone.routes.indexOf(right)}`) : null,
+        },
+      });
+      continue;
+    }
+    if (left.status !== right.status) {
+      findings.push({
+        category: 'route-status-mismatch',
+        subject,
+        status: 'open',
+        comparator: findingComparator,
+        observed: { source: left.status, clone: right.status },
+        evidence: {
+          source: evidence(sourceRunId, 'measurements/routes.json', `#/routes/${source.routes.indexOf(left)}/status`),
+          clone: evidence(cloneRunId, 'measurements/routes.json', `#/routes/${clone.routes.indexOf(right)}/status`),
+        },
+      });
+    }
+  }
+  return { findings, comparatorCoverage };
+}
+
+function compareClassAudits(source, clone, sourceRunId, cloneRunId) {
+  const sourceRoutes = routeMap(source);
+  const cloneRoutes = routeMap(clone);
+  const findings = [];
+  const comparatorCoverage = [];
+  for (const [route, cloneValue] of cloneRoutes) {
+    const sourceValue = sourceRoutes.get(route);
+    if (!sourceValue) continue;
+    if (sourceValue.cssCoverageComplete === false || cloneValue.cssCoverageComplete === false) continue;
+    comparatorCoverage.push({ comparator: comparator('compiled-css', 'dead-runtime-class', 'class-presence', 'gate'), subject: { route } });
+    const sourceClasses = new Set(sourceValue.deadClasses ?? []);
+    for (const className of cloneValue.deadClasses ?? []) {
+      if (!sourceClasses.has(className)) findings.push({
+        category: 'new-dead-runtime-class',
+        subject: { route, className },
+        status: 'open',
+        comparator: comparator('compiled-css', 'dead-runtime-class', 'class-presence', 'gate'),
+        evidence: {
+          source: evidence(sourceRunId, 'measurements/classes.json', `#/audit/routes/${source.routes.indexOf(sourceValue)}/deadClasses`),
+          clone: evidence(cloneRunId, 'measurements/classes.json', `#/audit/routes/${clone.routes.indexOf(cloneValue)}/deadClasses/${cloneValue.deadClasses.indexOf(className)}`),
+        },
+      });
+    }
+  }
+  return { findings, comparatorCoverage };
+}
+
+function unsupportedKinds(sourceManifest, cloneManifest) {
+  const kinds = [...new Set([...sourceManifest.artifacts, ...cloneManifest.artifacts].map((artifact) => artifact.kind))];
+  return kinds.filter((kind) => kind && !SUPPORTED_KINDS.has(kind) && !METADATA_KINDS.has(kind)).map((kind) => ({ kind, status: 'unsupported' }));
+}
+
+export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceRunId, cloneRunId, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
+  if (!CONCRETE_RUN_ID.test(sourceRunId) || !CONCRETE_RUN_ID.test(cloneRunId)) {
+    throw new Error('Comparisons require concrete source and clone run IDs');
+  }
+  const routeComparison = compareRoutes(sourceRoutes, cloneRoutes, sourceRunId, cloneRunId);
+  const controlComparison = compareControls(sourceControls, cloneControls, sourceRunId, cloneRunId, policy, sourceControlAudit, cloneControlAudit);
+  const classComparison = compareClassAudits(sourceClasses, cloneClasses, sourceRunId, cloneRunId);
+  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings];
+  return {
+    schemaVersion: 1,
+    semantics: FINDING_SEMANTICS,
+    sourceRunId,
+    cloneRunId,
+    supportedKinds: [...SUPPORTED_KINDS],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage],
+    findings,
+  };
+}
+
+function coveredAuditRoutes(manifest, bundle) {
+  const hasBundleRoutes = Array.isArray(bundle.routes);
+  const auditableRoutes = (bundle.routes ?? [])
+    .filter((entry) => entry.classifiedCount === undefined || entry.controlCount === undefined || entry.classifiedCount === entry.controlCount)
+    .map((entry) => entry.route)
+    .filter(Boolean);
+  const routes = hasBundleRoutes
+    ? auditableRoutes
+    : manifest.scope?.routesCompleted ?? [];
+  return [...new Set(routes)];
+}
+
+function readCompatibleControlAudit({ root, siteKey, measurementManifest, auditRunId, expectedPolicySha256, requiredRoutes, explicit }) {
+  const manifest = readManifest(root, siteKey, auditRunId);
+  const invalid = (message) => {
+    if (explicit) throw new Error(`Control audit ${auditRunId} is incompatible: ${message}`);
+    return null;
+  };
+  if (manifest.status !== 'closed') return invalid(`status is ${manifest.status}`);
+  if (manifest.kind !== 'audit') return invalid(`kind is ${manifest.kind}`);
+  if (manifest.scope?.parentRunId !== measurementManifest.runId) return invalid(`parent run is ${manifest.scope?.parentRunId ?? 'missing'}, expected ${measurementManifest.runId}`);
+  if (manifest.target?.kind && manifest.target.kind !== measurementManifest.target?.kind) return invalid(`target is ${manifest.target.kind}, expected ${measurementManifest.target?.kind}`);
+  if (manifest.policySha256 !== expectedPolicySha256) return invalid('policy snapshot does not match the requested diff policy');
+  if (!manifest.artifacts.some((artifact) => artifact.path === 'audits/dead-controls.json')) return invalid('dead-controls artifact is missing');
+  const bundle = readJson(root, siteKey, auditRunId, 'audits/dead-controls.json');
+  const coveredRoutes = coveredAuditRoutes(manifest, bundle);
+  const parentRoutes = new Set(measurementManifest.scope?.routesCompleted ?? measurementManifest.scope?.routesRequested ?? []);
+  if (coveredRoutes.some((route) => !parentRoutes.has(route))) return invalid('covered routes escape the parent measurement scope');
+  if (!explicit && requiredRoutes.some((route) => !coveredRoutes.includes(route))) return null;
+  return {
+    bundle: { runId: auditRunId, ...bundle },
+    selection: { runId: auditRunId, mode: explicit ? 'explicit' : 'auto', coveredRoutes },
+  };
+}
+
+export function selectControlAudit({ root = process.cwd(), siteKey, measurementRunId, auditRunId = null, policy = {}, requiredRoutes = null } = {}) {
+  const measurementManifest = readManifest(root, siteKey, measurementRunId);
+  const expectedPolicySha256 = policySha256(policy);
+  const routes = requiredRoutes ?? measurementManifest.scope?.routesCompleted ?? measurementManifest.scope?.routesRequested ?? [];
+  if (auditRunId) {
+    return readCompatibleControlAudit({ root, siteKey, measurementManifest, auditRunId, expectedPolicySha256, requiredRoutes: routes, explicit: true });
+  }
+  const candidates = listRuns(root, siteKey)
+    .filter((manifest) => manifest.status === 'closed' && manifest.kind === 'audit' && manifest.scope?.parentRunId === measurementRunId)
+    .filter((manifest) => manifest.artifacts.some((artifact) => artifact.path === 'audits/dead-controls.json'))
+    .reverse();
+  for (const candidate of candidates) {
+    const selected = readCompatibleControlAudit({
+      root,
+      siteKey,
+      measurementManifest,
+      auditRunId: candidate.runId,
+      expectedPolicySha256,
+      requiredRoutes: routes,
+      explicit: false,
+    });
+    if (selected) return selected;
+  }
+  return null;
+}
+
+export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneRunId, policy = {}, sourceAuditRunId = null, cloneAuditRunId = null } = {}) {
+  const sourceManifest = readManifest(root, siteKey, sourceRunId);
+  const cloneManifest = readManifest(root, siteKey, cloneRunId);
+  if (sourceManifest.status !== 'closed' || cloneManifest.status !== 'closed') throw new Error('Only closed runs can be compared');
+  const sourceRoutes = readJson(root, siteKey, sourceRunId, 'measurements/routes.json');
+  const cloneRoutes = readJson(root, siteKey, cloneRunId, 'measurements/routes.json');
+  const sourceControls = readJson(root, siteKey, sourceRunId, 'measurements/controls.json');
+  const cloneControls = readJson(root, siteKey, cloneRunId, 'measurements/controls.json');
+  const sourceClasses = readJson(root, siteKey, sourceRunId, 'measurements/classes.json');
+  const cloneClasses = readJson(root, siteKey, cloneRunId, 'measurements/classes.json');
+  const sourceCoverage = readJson(root, siteKey, sourceRunId, 'coverage.json');
+  const cloneCoverage = readJson(root, siteKey, cloneRunId, 'coverage.json');
+  const sourceAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: sourceRunId, auditRunId: sourceAuditRunId, policy });
+  const cloneAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: cloneRunId, auditRunId: cloneAuditRunId, policy });
+  const sourceControlAudit = sourceAuditSelection?.bundle ?? null;
+  const cloneControlAudit = cloneAuditSelection?.bundle ?? null;
+  const report = compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceRunId, cloneRunId, policy, sourceControlAudit, cloneControlAudit });
+  return {
+    ...report,
+    source: { runId: sourceRunId, target: sourceManifest.target, scope: sourceManifest.scope },
+    clone: { runId: cloneRunId, target: cloneManifest.target, scope: cloneManifest.scope },
+    controlAudits: {
+      sourceRunId: sourceControlAudit?.runId ?? null,
+      cloneRunId: cloneControlAudit?.runId ?? null,
+      source: sourceAuditSelection?.selection ?? null,
+      clone: cloneAuditSelection?.selection ?? null,
+    },
+    unsupported: unsupportedKinds(sourceManifest, cloneManifest),
+    coverage: {
+      source: sourceRoutes.routes?.length ?? 0,
+      clone: cloneRoutes.routes?.length ?? 0,
+      sourceRunId,
+      cloneRunId,
+      sourceDetails: sourceCoverage,
+      cloneDetails: cloneCoverage,
+    },
+  };
+}
+
+function inferFindingComparator(finding) {
+  if (finding?.comparator) return finding.comparator;
+  const category = finding?.category ?? '';
+  if (category === 'missing-control' || category === 'extra-control') return comparator('static-control', 'control-presence', 'presence');
+  const controlMatch = /^control-(.+)-mismatch$/u.exec(category);
+  if (controlMatch) {
+    const actionEvidence = [finding?.evidence?.source, finding?.evidence?.clone]
+      .some((entry) => entry?.artifact?.includes('dead-controls'));
+    return actionEvidence
+      ? comparator('dead-controls', 'control-effect', controlMatch[1], finding?.policy?.mode ?? null)
+      : comparator('static-control', 'control-static', controlMatch[1], finding?.policy?.mode ?? null);
+  }
+  if (category === 'route-missing' || category === 'route-status-mismatch') return comparator('route-inventory', 'route-status', 'status');
+  if (category === 'new-dead-runtime-class') return comparator('compiled-css', 'dead-runtime-class', 'class-presence');
+  return null;
+}
+
+function sameControlSubject(left = {}, right = {}) {
+  return ['route', 'role', 'name', 'controlClass', 'occurrence'].every((key) => (left[key] ?? null) === (right[key] ?? null));
+}
+
+function comparatorSubjectsMatch(instrument, expected = {}, actual = {}) {
+  if (instrument === 'dead-controls' || instrument === 'static-control') return sameControlSubject(expected, actual);
+  return (expected.route ?? null) === (actual.route ?? null);
+}
+
+function reportComparisonScope(report, route) {
+  const side = (entry, details) => {
+    const coveredRoutes = entry?.scope?.routesCompleted ?? entry?.scope?.routesRequested ?? [];
+    const scope = details?.scope ?? null;
+    return {
+      targetKind: entry?.target?.kind ?? null,
+      scope,
+      inventoryBacked: scope !== null && scope !== 'ad-hoc',
+      inventoryRunId: details?.inventory?.runId ?? entry?.scope?.inventoryRunId ?? null,
+      routeCovered: route ? coveredRoutes.includes(route) : true,
+    };
+  };
+  return {
+    source: side(report.source, report.coverage?.sourceDetails),
+    clone: side(report.clone, report.coverage?.cloneDetails),
+  };
+}
+
+function comparisonScopesCompatible(previous, current) {
+  if (!previous) return current.source.routeCovered && current.clone.routeCovered;
+  for (const side of ['source', 'clone']) {
+    if (previous[side]?.targetKind && current[side]?.targetKind && previous[side].targetKind !== current[side].targetKind) return false;
+    if (previous[side]?.inventoryBacked && !current[side]?.inventoryBacked) return false;
+    if (!current[side]?.routeCovered) return false;
+  }
+  return true;
+}
+
+export function findingCanClose(previousSummary, report) {
+  const finding = previousSummary?.finding;
+  if (!finding) return false;
+  const required = inferFindingComparator(finding);
+  if (!required) return false;
+  const coverage = (report.comparatorCoverage ?? []).find((entry) => {
+    const current = entry.comparator ?? {};
+    if (current.instrument !== required.instrument || current.evidenceClass !== required.evidenceClass) return false;
+    if ((current.dimension ?? null) !== (required.dimension ?? null)) return false;
+    if (required.mode && current.mode && required.mode !== current.mode) return false;
+    return comparatorSubjectsMatch(required.instrument, finding.subject ?? finding, entry.subject ?? {});
+  });
+  if (!coverage) return false;
+  return comparisonScopesCompatible(finding.comparisonScope ?? null, reportComparisonScope(report, finding.subject?.route ?? finding.route ?? null));
+}
+
+export function findingEventsFromReport(report) {
+  return report.findings.map((finding, index) => ({
+    type: 'finding.opened',
+    findingId: stableFindingId({
+      ...finding,
+      domain: 'parity',
+      target: 'comparison',
+      comparison: {
+        sourceKind: report.source?.target?.kind ?? null,
+        cloneKind: report.clone?.target?.kind ?? null,
+      },
+    }) || `F-${String(index + 1).padStart(4, '0')}`,
+    sourceRunId: report.sourceRunId,
+    cloneRunId: report.cloneRunId,
+    finding: {
+      ...finding,
+      domain: 'parity',
+      target: 'comparison',
+      comparison: {
+        sourceKind: report.source?.target?.kind ?? null,
+        cloneKind: report.clone?.target?.kind ?? null,
+      },
+      comparisonScope: reportComparisonScope(report, finding.subject?.route ?? finding.route ?? null),
+    },
+  }));
+}
+
+export { SUPPORTED_KINDS, normalizedDestination };
