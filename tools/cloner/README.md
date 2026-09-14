@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.12.0
+# Cloner parity CLI v0.12.1
 
-The cloner CLI is the repository-owned v0.12.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.12.1 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 

@@ -90,7 +90,16 @@ export async function collectAssetReferences(page) {
       if (element.id) return `#${element.id.slice(0, 120)}`;
       const testId = element.getAttribute('data-testid');
       if (testId) return `[data-testid="${testId.slice(0, 120)}"]`;
-      return element.tagName.toLowerCase();
+      const parts = [];
+      let current = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE) {
+        let position = 1;
+        let sibling = current;
+        while ((sibling = sibling.previousElementSibling)) position += 1;
+        parts.unshift(`${current.tagName.toLowerCase()}:nth-child(${position})`);
+        current = current.parentElement;
+      }
+      return parts.join('>');
     };
     const srcset = (value, element, attribute) => String(value || '').split(',').map((candidate) => candidate.trim()).filter(Boolean).forEach((candidate, index) => {
       const parts = candidate.split(/\s+/u);

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-14
+
+### Fixed
+- Hardened source-action occurrence identity, DOMSnapshot redaction, authenticated inventory and parity provenance, resumable optional evidence, motion transforms, compiled CSS selector discovery, asset associations, and manual ledger status transitions
+- Added browser coverage for duplicate safe-action controls, declaration-text CSS false positives, repeated asset references, and repaired evidence continuity
+
 ## [0.12.0] - 2026-09-14
 
 ### Added
@@ -142,7 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT license
 - README with badges, demo section, quick start, and star history
 
-[Unreleased]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.9.0...v0.10.0

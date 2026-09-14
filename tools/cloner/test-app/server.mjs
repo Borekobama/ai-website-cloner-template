@@ -69,6 +69,7 @@ function pageDocument({ route, mode, repaired, port }) {
     <main class="page-shell${extraCloneClass}">
       <div data-visual-region="chrome" class="${cloneNeedsRepair ? 'clone-visual-defect' : ''}"><h1>Parity fixture</h1></div>
       <p class="readable-runtime">Readable stylesheet runtime class.</p>
+      <p class="phantom">Declaration-text class fixture.</p>
       <div class="toolbar">
         ${moreControls}
         <button class="fixture-control motion-toggle motion-sampled${cloneNeedsRepair ? ' motion-defect' : ''}" data-control-class="toggle" data-action="toggle" data-state="closed" aria-label="Toggle" aria-pressed="false">Toggle</button>
@@ -82,11 +83,11 @@ function pageDocument({ route, mode, repaired, port }) {
       <div id="overlay-root"></div>
     </main>
   ` : route === '/noise' ? `
-    <main class="page-shell"><h1>Noisy timer</h1><p class="noise-value" id="noise-value">0</p><div data-control-region="noise-dead"><button class="fixture-control" data-control-class="dead" aria-label="Noisy dead button">Noisy dead button</button></div></main>
+    <main class="page-shell"><h1>Noisy timer</h1><p class="noise-value" id="noise-value">0</p><div data-control-region="noise-dead"><button class="fixture-control" data-control-class="dead" aria-label="Noisy dead button">Noisy dead button</button><button data-testid="duplicate-destructive-a" class="fixture-control" data-control-class="destructive" aria-label="Duplicate destructive">Duplicate destructive</button><button data-testid="duplicate-destructive-b" class="fixture-control" data-control-class="destructive" aria-label="Duplicate destructive">Duplicate destructive</button></div></main>
   ` : route === '/responsive' ? `
     <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p></main>
   ` : route === '/assets' ? `
-    <main class="page-shell"><h1>Asset fixture</h1><img src="/fixture.svg" alt="Fixture asset"><div style="background-image: url('/fixture.svg')">Asset reference.</div></main>
+    <main class="page-shell"><h1>Asset fixture</h1><img src="/fixture.svg" alt="Fixture asset"><img src="/fixture.svg" alt="Repeated fixture asset"><div style="background-image: url('/fixture.svg')">Asset reference.</div></main>
   ` : route === '/incomplete-css' ? `
     <main class="page-shell"><h1>Incomplete CSS</h1><p class="incomplete-runtime">Cross-origin stylesheet candidate.</p></main>
   ` : route === '/broken-hydration' ? `
@@ -109,7 +110,7 @@ function pageDocument({ route, mode, repaired, port }) {
   <head>
     <meta charset="utf-8">
     <title>Parity fixture</title>
-    <style>${COMMON_CSS}</style>
+    <style>${COMMON_CSS}.real-content { content: ".phantom"; background-image: url('/fixture.svg'); }</style>
     ${extraHead}
   </head>
   <body>
