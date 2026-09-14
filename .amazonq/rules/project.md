@@ -73,7 +73,7 @@ scripts/            # Asset download scripts
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
 
-## Parity workflow (v0.5.1)
+## Parity workflow (v0.6.0)
 
 The repository-owned parity spine lives under `tools/cloner/` and is invoked
 with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,
@@ -113,9 +113,10 @@ npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clo
 
 Machine measurements are evidence. Component specifications remain derived
 builder contracts for the reconstruction workflow and do not override an
-immutable measurement. Initial visual QA is an additional signal; a clone is
-reported with a parity milestone, run IDs, coverage, findings, exceptions and
-known gaps so it can be revisited later.
+immutable measurement. Region-scoped visual evidence compares configured
+regions only; screenshot artifacts stay private by default. A clone is reported
+with a parity milestone, run IDs, coverage, findings, exceptions and known gaps
+so it can be revisited later.
 
 Parity findings identify source-vs-clone mismatches. Clone-health findings
 identify clone implementation-quality observations. Clone-health findings do
@@ -245,6 +246,7 @@ Before accepting a parity milestone:
 - [ ] Failed runs retain incrementally persisted completed-route evidence and accurately name failed routes
 - [ ] Findings are appended to `docs/research/<site-key>/_parity/ledger.jsonl`
 - [ ] Visual QA is reported as an additional signal, not as permanent completion
+- [ ] Region-scoped visual evidence compares only configured invariant regions and keeps screenshot artifacts private by default
 
 Never use historical prose counts as fixture expectations. Freeze a failing
 instrument result with `fixture freeze` before repairing the instrument.

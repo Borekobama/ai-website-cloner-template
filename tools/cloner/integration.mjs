@@ -59,6 +59,7 @@ async function main() {
   const parityRoot = mkdtempSync(join(tmpdir(), 'cloner-integration-'));
   const profile = join(parityRoot, 'source-profile');
   const policyPath = 'parity-exceptions.json';
+  const visualConfigPath = join(parityRoot, 'visual-regions.json');
   writeFileSync(join(parityRoot, policyPath), `${JSON.stringify({
     version: 1,
     actions: [
@@ -76,6 +77,18 @@ async function main() {
       'overlay-trigger': { dimensions: { overlay: 'gate' } },
       'dom-trigger': { dimensions: { dom: 'gate' } },
     },
+  }, null, 2)}\n`);
+  writeFileSync(visualConfigPath, `${JSON.stringify({
+    schemaVersion: 1,
+    regions: [{
+      route: '/home',
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
+      id: 'chrome',
+      selector: '[data-visual-region="chrome"]',
+      classification: 'invariant',
+      mode: 'gate',
+      threshold: 0,
+    }],
   }, null, 2)}\n`);
   let source;
   let clone;
@@ -97,8 +110,8 @@ async function main() {
     assert.notEqual(unverified.code, 0, 'unverified hydration route must fail clone measurement');
     assert.match(unverified.stderr, /Clone runtime is not hydrated on \/unverified-hydration; evidence=unverified/);
 
-    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory']);
-    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory']);
+    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', '--visual-regions', visualConfigPath]);
+    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', '--visual-regions', visualConfigPath]);
     const sourceRun = sourceMeasurement.runId;
     const cloneRun = cloneMeasurement.runId;
     assert.match(sourceRun, /^\d{8}T\d{6}Z_source_[a-f0-9]{8}$/);
@@ -128,7 +141,7 @@ async function main() {
       target: 'comparison',
       comparison: { sourceKind: 'source', cloneKind: 'clone' },
     })));
-    for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class']) {
+    for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class', 'visual-region-mismatch']) {
       assert.ok(initialCategories.has(category), `expected initial finding ${category}`);
     }
 
@@ -159,7 +172,7 @@ async function main() {
 
     await clone.close();
     clone = await startFixtureServer({ mode: 'clone', repaired: true });
-    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun]);
+    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath]);
     const repairedAudit = await audit(parityRoot, policyPath, 'clone', repairedMeasurement.runId);
     const repairedClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'clone', '--run', repairedMeasurement.runId, ...commonArgs(parityRoot, policyPath)]);
     assert.equal(repairedClasses.code, 0, repairedClasses.stderr);

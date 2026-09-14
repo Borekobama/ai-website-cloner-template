@@ -13,7 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { redactForPersistence } from './redact.mjs';
 
 export const RUN_SCHEMA_VERSION = 1;
-export const ENGINE_VERSION = '0.5.1';
+export const ENGINE_VERSION = '0.6.0';
 
 const CONCRETE_RUN_ID = /^[0-9]{8}T[0-9]{6}Z_[a-z0-9-]+_[a-f0-9]{8}$/;
 const REF_NAME = /^(source|clone)-current$/;
@@ -190,7 +190,7 @@ export function updateRun(root = process.cwd(), siteKey, runId, patch = {}) {
 
 function artifactRecord(manifest, artifactPath, bytes) {
   return {
-    kind: artifactPath.endsWith('.json') ? 'json' : 'text',
+    kind: artifactPath.endsWith('.json') ? 'json' : artifactPath.endsWith('.png') ? 'image/png' : 'text',
     path: artifactPath,
     sha256: sha256(bytes),
     bytes: bytes.byteLength,
@@ -211,13 +211,18 @@ export function writeArtifact(root = process.cwd(), siteKey, runId, artifactPath
   if (existsSync(targetPath)) {
     throw new Error(`Open-run artifacts are append-only; artifact already exists on disk: ${artifactPath}`);
   }
-  const serialized = typeof value === 'string'
-    ? redactForPersistence(value)
-    : `${JSON.stringify(redactForPersistence(value), null, 2)}\n`;
-  const bytes = Buffer.from(serialized, 'utf8');
+  const bytes = Buffer.isBuffer(value)
+    ? value
+    : Buffer.from(typeof value === 'string'
+      ? redactForPersistence(value)
+      : `${JSON.stringify(redactForPersistence(value), null, 2)}\n`, 'utf8');
   mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
   writeFileSync(targetPath, bytes, { mode: 0o600 });
-  manifest.artifacts.push({ ...artifactRecord(manifest, artifactPath, bytes), ...(options.kind ? { kind: options.kind } : {}) });
+  manifest.artifacts.push({
+    ...artifactRecord(manifest, artifactPath, bytes),
+    ...(options.kind ? { kind: options.kind } : {}),
+    ...(options.visibility ? { visibility: options.visibility } : {}),
+  });
   writeManifest(directory, manifest);
   return manifest.artifacts.at(-1);
 }

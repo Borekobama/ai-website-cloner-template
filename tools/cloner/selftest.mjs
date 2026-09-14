@@ -13,6 +13,8 @@ import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { classifyControl } from './audits/dead-controls.mjs';
 import { evaluateAction, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
+import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual-regions.mjs';
+import { PNG } from 'pngjs';
 
 let running;
 
@@ -48,7 +50,12 @@ export async function runSelfTests() {
       assert.throws(() => writeArtifact(root, siteKey, run.runId, 'measurements/after.json', { changed: true }), /immutable/);
       assert.equal(JSON.parse(readArtifact(root, siteKey, run.runId, 'coverage.json')).inventory.runId, run.runId);
       assert.equal(setRef(root, siteKey, 'source-current', run.runId), run.runId);
-      assert.equal(policySha256({ version: 1 }), policySha256({ version: 1 }));
+    assert.equal(policySha256({ version: 1 }), policySha256({ version: 1 }));
+    const visualConfig = normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 2, height: 2 }, id: 'sidebar', selector: '#sidebar' }] });
+    assert.equal(visualConfig.regions[0].mode, 'gate');
+    const image = new PNG({ width: 1, height: 1 });
+    image.data[3] = 255;
+    assert.equal(compareVisualRegionImages(PNG.sync.write(image), PNG.sync.write(image)).equal, true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

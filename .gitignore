@@ -51,3 +51,6 @@ temp/
 # Authenticated browser state and local cloner runtime
 .cloner-profiles/
 .cloner-runtime/
+
+# Private parity evidence, including authenticated screenshots and diffs
+docs/research/*/_parity/

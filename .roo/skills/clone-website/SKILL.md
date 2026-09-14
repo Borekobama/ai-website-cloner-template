@@ -261,6 +261,19 @@ audit IDs/covered routes. Close a prior finding only after the comparator/eviden
 class capable of reproducing it ran again over the same route/control occurrence
 with compatible scope.
 
+For configured invariant visual regions, pass the same versioned configuration to
+source and clone measurements:
+
+```bash
+npm run cloner -- measure --target source --url <source-origin> --site <site-key> --routes <route,...> --profile .cloner-profiles/primary --inventory --visual-regions <visual-regions.json>
+npm run cloner -- measure --target clone --url <clone-origin> --site <site-key> --routes <route,...> --inventory --visual-regions <visual-regions.json>
+```
+
+Visual regions are explicit evidence modules. Compare only configured regions;
+never use a whole-page pixel score. Keep screenshot evidence private by default.
+Missing or ambiguous invariant regions make visual coverage incomplete and cannot
+close an older visual finding.
+
 Parity findings identify source-vs-clone mismatches. Clone-health findings
 identify clone implementation-quality observations. Clone-health findings do
 not automatically block a parity milestone when source and clone intentionally

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "regions": [
+    {
+      "route": "/home",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      },
+      "id": "sidebar",
+      "selector": "[data-visual-region=\"sidebar\"]",
+      "classification": "invariant",
+      "mode": "gate",
+      "threshold": 0.001,
+      "pixelThreshold": 0.1
+    }
+  ]
+}

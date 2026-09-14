@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-14
+
+### Added
+- Region-scoped visual parity evidence with deterministic Playwright screenshots, pixel comparison, private PNG artifacts, coverage, and ledger-aware findings
+
 ## [0.4.0] - 2026-08-10
 
 ### Added

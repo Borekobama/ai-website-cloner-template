@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { PNG } from 'pngjs';
 import { classNamesFromCss, auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { classifyControl, compareEffectSignatures } from './audits/dead-controls.mjs';
 import { compareMeasurementData, findingCanClose, selectControlAudit } from './diff.mjs';
@@ -11,6 +12,7 @@ import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
 import { closeRun, createRun, failRun, freezeFixture, readArtifact, readManifest, resolveRunId, setRef, updateRun, writeArtifact } from './run-store.mjs';
 import { startFixtureServer } from './test-app/server.mjs';
+import { captureVisualRegions, compareVisualRegionImages, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 
 function createAuthoritativeInventory(root, siteKey, runId, routes = ['/home', '/billing'], target = 'clone') {
   const run = createRun({
@@ -51,6 +53,153 @@ test('redaction happens before persistence and removes credential-bearing URLs',
   assert.equal(containsSensitiveMaterial(safe), false);
   const header = redactForPersistence('Authorization: Bearer secret Cookie: session=secret');
   assert.equal(containsSensitiveMaterial(header), false);
+});
+
+function visualPng(color) {
+  const png = new PNG({ width: 2, height: 2 });
+  for (let index = 0; index < png.data.length; index += 4) {
+    png.data[index] = color[0];
+    png.data[index + 1] = color[1];
+    png.data[index + 2] = color[2];
+    png.data[index + 3] = 255;
+  }
+  return PNG.sync.write(png);
+}
+
+test('visual region config and pixel comparison preserve explicit semantics', () => {
+  const config = normalizeVisualRegionConfig({
+    schemaVersion: 1,
+    regions: [{ route: '/home', viewport: { width: 1440, height: 900, deviceScaleFactor: 1 }, id: 'sidebar', selector: '[data-region="sidebar"]', classification: 'invariant', mode: 'gate', threshold: 0.001, pixelThreshold: 0.1 }],
+  });
+  assert.equal(config.regions[0].classification, 'invariant');
+  assert.equal(visualRegionConfigHash(config).length, 64);
+  const equal = compareVisualRegionImages(visualPng([20, 20, 20]), visualPng([20, 20, 20]));
+  assert.equal(equal.equal, true);
+  assert.equal(equal.complete, true);
+  assert.equal(equal.diffPixels, 0);
+  assert.equal(equal.diffRatio, 0);
+  assert.deepEqual([...equal.diff.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  const mismatch = compareVisualRegionImages(visualPng([20, 20, 20]), visualPng([220, 20, 20]));
+  assert.equal(mismatch.equal, false);
+  assert.equal(mismatch.diffPixels, 4);
+  assert.equal(mismatch.diffRatio, 1);
+  assert.throws(() => normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 1, height: 1 }, id: 'bad', selector: '#x', classification: 'weird', mode: 'informational' }] }), /unsupported classification/);
+  assert.throws(() => normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 1, height: 1 }, id: 'bad', selector: '#x', threshold: 2 }] }), /threshold.*between/);
+  assert.throws(() => normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 1, height: 1 }, id: 'bad', selector: '#x', threshold: -1 }] }), /threshold.*between/);
+  assert.throws(() => normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 1, height: 1 }, id: 'bad', selector: '#x', pixelThreshold: 2 }] }), /pixelThreshold.*between/);
+  assert.throws(() => normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 1, height: 1 }, id: 'bad', selector: '#x', maxDiffPixels: 1.5 }] }), /maxDiffPixels must be/);
+  assert.throws(() => normalizeVisualRegionConfig({ regions: [{ route: '/home', viewport: { width: 1, height: 1 }, id: 'bad', selector: '#x', maxDiffPixels: '4' }] }), /maxDiffPixels must be/);
+  assert.throws(() => compareVisualRegionImages(visualPng([20, 20, 20]), visualPng([20, 20, 20]), { threshold: -0.1 }), /threshold.*between/);
+  assert.throws(() => compareVisualRegionImages(visualPng([20, 20, 20]), visualPng([20, 20, 20]), { pixelThreshold: 2 }), /pixelThreshold.*between/);
+  assert.throws(() => compareVisualRegionImages(visualPng([20, 20, 20]), visualPng([20, 20, 20]), { maxDiffPixels: -1 }), /maxDiffPixels must be/);
+});
+
+test('visual comparator emits mismatch and preserves complete coverage for repair', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cloner-visual-test-'));
+  const siteKey = 'visual.example';
+  const sourceRunId = '20260914T000001Z_source_11111111';
+  const cloneRunId = '20260914T000002Z_clone_22222222';
+  const makeRun = (runId, target, image) => {
+    createRun({ root, siteKey, runId, kind: target, target: { kind: target }, scope: { inventoryRunId: null, authoritativeInventory: false } });
+    writeArtifact(root, siteKey, runId, 'coverage.json', { inventory: { runId: null, authoritative: false }, measurement: {}, scope: 'ad-hoc' });
+    writeArtifact(root, siteKey, runId, 'measurements/visual-regions/home/chrome.png', image, { kind: 'visual-region-png', visibility: 'private' });
+    closeRun(root, siteKey, runId);
+  };
+  const region = { route: '/home', id: 'chrome', status: 'captured', artifactPath: 'measurements/visual-regions/home/chrome.png', viewport: { width: 2, height: 2, deviceScaleFactor: 1 }, mode: 'gate', threshold: 0, pixelThreshold: 0.1 };
+  try {
+    makeRun(sourceRunId, 'source', visualPng([20, 20, 20]));
+    makeRun(cloneRunId, 'clone', visualPng([220, 20, 20]));
+    const sourceVisual = { routes: [{ route: '/home', regions: [region] }] };
+    const cloneVisual = { routes: [{ route: '/home', regions: [region] }] };
+    const mismatch = compareMeasurementData({ root, siteKey, sourceRoutes: { routes: [] }, cloneRoutes: { routes: [] }, sourceControls: { observations: [] }, cloneControls: { observations: [] }, sourceClasses: { routes: [] }, cloneClasses: { routes: [] }, sourceVisual, cloneVisual, sourceRunId, cloneRunId });
+    assert.equal(mismatch.findings[0].category, 'visual-region-mismatch');
+    assert.equal(mismatch.comparatorCoverage.at(-1).complete, true);
+    makeRun(cloneRunId.replace('000002', '000003').replace('22222222', '33333333'), 'clone', visualPng([20, 20, 20]));
+    const repairedCloneRunId = '20260914T000003Z_clone_33333333';
+    const repaired = compareMeasurementData({ root, siteKey, sourceRoutes: { routes: [] }, cloneRoutes: { routes: [] }, sourceControls: { observations: [] }, cloneControls: { observations: [] }, sourceClasses: { routes: [] }, cloneClasses: { routes: [] }, sourceVisual, cloneVisual: { routes: [{ route: '/home', regions: [{ ...region, artifactPath: region.artifactPath }] }] }, sourceRunId, cloneRunId: repairedCloneRunId });
+    assert.equal(repaired.findings.length, 0);
+    assert.equal(repaired.visualCoverage.complete, true);
+    assert.equal(findingCanClose({ finding: mismatch.findings[0] }, {
+      ...repaired,
+      source: { target: { kind: 'source' }, scope: { routesCompleted: ['/home'] } },
+      clone: { target: { kind: 'clone' }, scope: { routesCompleted: ['/home'] } },
+    }), true);
+    const priorPolicy = { routes: [{ route: '/home', regions: [{ ...region, classification: 'invariant', mode: 'informational' }] }] };
+    const currentPolicy = { routes: [{ route: '/home', regions: [{ ...region, classification: 'data-dependent', mode: 'informational' }] }] };
+    const priorPolicyReport = compareMeasurementData({ root, siteKey, sourceRoutes: { routes: [] }, cloneRoutes: { routes: [] }, sourceControls: { observations: [] }, cloneControls: { observations: [] }, sourceClasses: { routes: [] }, cloneClasses: { routes: [] }, sourceVisual: priorPolicy, cloneVisual: priorPolicy, sourceRunId, cloneRunId });
+    const currentPolicyReport = compareMeasurementData({ root, siteKey, sourceRoutes: { routes: [] }, cloneRoutes: { routes: [] }, sourceControls: { observations: [] }, cloneControls: { observations: [] }, sourceClasses: { routes: [] }, cloneClasses: { routes: [] }, sourceVisual: currentPolicy, cloneVisual: currentPolicy, sourceRunId, cloneRunId: repairedCloneRunId });
+    assert.equal(findingCanClose({ finding: priorPolicyReport.findings[0] }, {
+      ...currentPolicyReport,
+      source: { target: { kind: 'source' }, scope: { routesCompleted: ['/home'] } },
+      clone: { target: { kind: 'clone' }, scope: { routesCompleted: ['/home'] } },
+    }), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('visual coverage uses configured regions and rejects dimension mismatch as incomplete', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cloner-visual-coverage-test-'));
+  const siteKey = 'visual-coverage.example';
+  const sourceRunId = '20260914T000004Z_source_44444444';
+  const cloneRunId = '20260914T000005Z_clone_55555555';
+  const config = { schemaVersion: 1, regions: [{ route: '/home', viewport: { width: 2, height: 2, deviceScaleFactor: 1 }, id: 'chrome', selector: '#chrome', classification: 'invariant', mode: 'gate', threshold: 0 }] };
+  const makeRun = (runId, target, image) => {
+    createRun({ root, siteKey, runId, kind: target, target: { kind: target }, scope: { inventoryRunId: null, authoritativeInventory: false } });
+    writeArtifact(root, siteKey, runId, 'coverage.json', { inventory: { runId: null, authoritative: false }, measurement: {}, scope: 'ad-hoc' });
+    writeArtifact(root, siteKey, runId, 'measurements/visual-regions/home/chrome.png', image, { kind: 'visual-region-png', visibility: 'private' });
+    closeRun(root, siteKey, runId);
+  };
+  try {
+    makeRun(sourceRunId, 'source', visualPng([20, 20, 20]));
+    const onePixel = new PNG({ width: 1, height: 1 });
+    onePixel.data[3] = 255;
+    makeRun(cloneRunId, 'clone', PNG.sync.write(onePixel));
+    const base = { root, siteKey, sourceRoutes: { routes: [] }, cloneRoutes: { routes: [] }, sourceControls: { observations: [] }, cloneControls: { observations: [] }, sourceClasses: { routes: [] }, cloneClasses: { routes: [] }, sourceRunId, cloneRunId };
+    const omitted = compareMeasurementData({ ...base, sourceVisual: { config, routes: [] }, cloneVisual: { config, routes: [] } });
+    assert.equal(omitted.visualCoverage.complete, false);
+    assert.equal(omitted.visualCoverage.regionsConfigured, 1);
+    assert.equal(omitted.findings[0].category, 'visual-region-incomplete');
+
+    const informational = { ...config, regions: [{ ...config.regions[0], mode: 'informational', classification: 'data-dependent' }] };
+    const oneSided = compareMeasurementData({ ...base, sourceVisual: { config: informational, routes: [] }, cloneVisual: null });
+    assert.equal(oneSided.comparatorCoverage[0].comparator.mode, 'informational');
+    assert.equal(oneSided.findings[0].policy.mode, 'informational');
+
+    const mismatchedConfig = compareMeasurementData({
+      ...base,
+      sourceVisual: { config, configSha256: 'source-config', routes: [] },
+      cloneVisual: { config: { ...config, regions: [{ ...config.regions[0], mode: 'ignore' }] }, configSha256: 'clone-config', routes: [] },
+    });
+    assert.equal(mismatchedConfig.visualCoverage.complete, false);
+    assert.equal(mismatchedConfig.findings[0].category, 'visual-region-incomplete');
+    assert.equal(mismatchedConfig.comparatorCoverage[0].comparator.mode, 'gate');
+
+    const dimensionSource = { ...config, routes: [{ route: '/home', regions: [{ id: 'chrome', route: '/home', status: 'captured', artifactPath: 'measurements/visual-regions/home/chrome.png', viewport: { width: 2, height: 2, deviceScaleFactor: 1 }, mode: 'gate', threshold: 0 }] }] };
+    const dimensionClone = { ...dimensionSource, routes: [{ route: '/home', regions: [{ ...dimensionSource.routes[0].regions[0], viewport: { width: 1, height: 1, deviceScaleFactor: 1 } }] }] };
+    const dimension = compareMeasurementData({ ...base, sourceVisual: dimensionSource, cloneVisual: dimensionClone });
+    assert.equal(dimension.visualCoverage.complete, false);
+    assert.equal(dimension.comparatorCoverage.at(-1).complete, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('visual capture fails invariant missing and ambiguous selectors', async () => {
+  const page = (count) => ({
+    url: () => 'http://fixture.test/home',
+    viewportSize: () => ({ width: 2, height: 2 }),
+    locator: () => ({
+      count: async () => count,
+      screenshot: async () => visualPng([20, 20, 20]),
+    }),
+  });
+  const config = { schemaVersion: 1, regions: [{ route: '/home', viewport: { width: 2, height: 2 }, id: 'chrome', selector: '#chrome' }] };
+  await assert.rejects(() => captureVisualRegions(page(0), { config, target: 'clone', route: '/home' }), /requires exactly one match/);
+  await assert.rejects(() => captureVisualRegions(page(2), { config, target: 'clone', route: '/home' }), /requires exactly one match/);
+  const informational = await captureVisualRegions(page(0), { config: { ...config, regions: [{ ...config.regions[0], classification: 'data-dependent', mode: 'informational' }] }, target: 'clone', route: '/home' });
+  assert.equal(informational.complete, false);
+  assert.equal(informational.regions[0].reason, 'missing-selector');
 });
 
 test('source actions require an explicit policy allowance', () => {
