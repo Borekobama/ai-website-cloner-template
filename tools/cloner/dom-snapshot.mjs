@@ -128,6 +128,19 @@ function structureSummary(snapshot) {
     const nodes = document.nodes ?? {};
     const names = nodes.nodeName ?? [];
     const parents = nodes.parentIndex ?? [];
+    const tags = names.map((value) => String(snapshotString(strings, value)).toLowerCase());
+    const included = new Set();
+    for (let index = 0; index < names.length; index += 1) {
+      let current = index;
+      while (Number.isInteger(current) && current >= 0 && current < names.length) {
+        if (tags[current] === 'body') {
+          included.add(index);
+          break;
+        }
+        current = parents[current];
+      }
+    }
+    if (included.size === 0) names.forEach((_, index) => included.add(index));
     const children = names.map(() => []);
     const depths = names.map(() => 0);
     for (let index = 0; index < names.length; index += 1) {
@@ -136,11 +149,11 @@ function structureSummary(snapshot) {
         children[parent].push(index);
         depths[index] = depths[parent] + 1;
       }
-      maxDepth = Math.max(maxDepth, depths[index]);
+      if (included.has(index)) maxDepth = Math.max(maxDepth, depths[index]);
     }
-    const tags = names.map((value) => String(snapshotString(strings, value)).toLowerCase());
     const roles = names.map((_, index) => String(nodeAttributes(nodes.attributes?.[index], strings).get('role') ?? '').toLowerCase());
     for (let index = 0; index < names.length; index += 1) {
+      if (!included.has(index)) continue;
       const tag = tags[index];
       if (!tag || tag.startsWith('#')) continue;
       elements += 1;
@@ -160,6 +173,7 @@ function structureSummary(snapshot) {
     const layout = document.layout ?? {};
     for (let index = 0; index < (layout.nodeIndex ?? []).length; index += 1) {
       const nodeIndex = layout.nodeIndex[index];
+      if (!included.has(nodeIndex)) continue;
       const tag = tags[nodeIndex];
       if (!tag || tag.startsWith('#')) continue;
       layoutNodes += 1;
