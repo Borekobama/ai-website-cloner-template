@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.7.0
+# Cloner parity CLI v0.8.0
 
-The cloner CLI is the repository-owned v0.7.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.8.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -47,6 +47,17 @@ npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site exam
 Add `--motion-sample` when deterministic Web Animations API samples are needed.
 Declared motion/state mismatches are parity gates. Samples remain informational.
 
+Capture complete Chromium DOMSnapshot evidence per route:
+
+```bash
+npm run cloner -- measure --target source --url https://example.test --site example.test-01234567 --routes /home,/billing --profile .cloner-profiles/primary --inventory --dom-snapshot
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --inventory --dom-snapshot
+```
+
+DOMSnapshot artifacts include flattened DOM, layout, paint order, selected
+computed styles, redacted content, and per-route fingerprints. They stay private
+by default and provide source evidence for builders and later fidelity modules.
+
 Source interactions are blocked unless `parity-exceptions.json` contains an
 explicit matching allowance. Blocked controls are still inventoried, but are
 never clicked. Authenticated profiles belong in `.cloner-profiles/`, which is
@@ -87,7 +98,7 @@ when deliberately promoting reviewed, redacted evidence into tracked
 
 Measurements are intentionally small and explicit. The supported parity spine
 is route inventory, control inventory, route-scoped runtime/compiled classes,
-coverage, motion/state evidence, two audits, region-scoped visual evidence,
+coverage, motion/state evidence, Chromium DOMSnapshot evidence, two audits, region-scoped visual evidence,
 policy-aware comparison, and an append-only JSONL findings ledger. Optional
 modules, such as DOM snapshots, require immutable evidence, coverage, comparison
 semantics, focused self-tests, and no universal completion gate.

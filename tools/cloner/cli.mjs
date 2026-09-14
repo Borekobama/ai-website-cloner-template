@@ -32,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.7.0
+AI Website Cloner parity CLI v0.8.0
 
 Usage:
   npm run cloner -- <command> [options]
@@ -68,6 +68,7 @@ Measure options:
   --visual-regions <path>        Versioned region-scoped visual measurement config
   --motion                      Capture declared motion/state evidence
   --motion-sample               Capture deterministic Web Animations API samples with --motion
+  --dom-snapshot                Capture Chromium CDP DOMSnapshot evidence
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -299,6 +300,7 @@ async function commandMeasure(options) {
     visualConfig,
     motion: Boolean(options.motion || options['motion-sample']),
     motionSample: Boolean(options['motion-sample']),
+    domSnapshot: Boolean(options['dom-snapshot']),
   });
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, coverage: result.coverage });
 }

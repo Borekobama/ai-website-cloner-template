@@ -13,7 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { redactForPersistence } from './redact.mjs';
 
 export const RUN_SCHEMA_VERSION = 1;
-export const ENGINE_VERSION = '0.7.0';
+export const ENGINE_VERSION = '0.8.0';
 
 const CONCRETE_RUN_ID = /^[0-9]{8}T[0-9]{6}Z_[a-z0-9-]+_[a-f0-9]{8}$/;
 const REF_NAME = /^(source|clone)-current$/;

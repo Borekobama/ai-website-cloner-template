@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-14
+
+### Added
+- Chromium CDP DOMSnapshot evidence with flattened DOM, layout, paint order, and selected computed styles persisted per route
+
 ## [0.7.0] - 2026-09-14
 
 ### Added

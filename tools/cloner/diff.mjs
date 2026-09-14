@@ -2,9 +2,10 @@ import { CONCRETE_RUN_ID, canonicalJson, listRuns, readArtifact, readManifest } 
 import { comparatorForDimension, dimensionsForControl, policySha256 } from './policy.mjs';
 import { stableFindingId } from './ledger.mjs';
 import { compareMotionObservations } from './motion.mjs';
+import { domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareVisualRegionImages, visualRoutePath } from './visual-regions.mjs';
 
-const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation']);
+const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation', 'dom-snapshot-observation']);
 const METADATA_KINDS = new Set(['policy-snapshot', 'failure', 'route-failure', 'report']);
 const CONTROL_EFFECT_DIMENSIONS = new Set(['url', 'aria', 'overlay', 'dom', 'style', 'network']);
 const FINDING_SEMANTICS = {
@@ -332,7 +333,7 @@ function unsupportedKinds(sourceManifest, cloneManifest) {
   return kinds.filter((kind) => kind && !SUPPORTED_KINDS.has(kind) && !METADATA_KINDS.has(kind)).map((kind) => ({ kind, status: 'unsupported' }));
 }
 
-export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceMotion = null, cloneMotion = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
+export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceMotion = null, cloneMotion = null, sourceDomSnapshot = null, cloneDomSnapshot = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
   if (!CONCRETE_RUN_ID.test(sourceRunId) || !CONCRETE_RUN_ID.test(cloneRunId)) {
     throw new Error('Comparisons require concrete source and clone run IDs');
   }
@@ -341,6 +342,16 @@ export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceContro
   const classComparison = compareClassAudits(sourceClasses, cloneClasses, sourceRunId, cloneRunId);
   const visualComparison = compareVisualRegions({ root, siteKey, source: sourceVisual, clone: cloneVisual, sourceRunId, cloneRunId, reportRunId });
   const motionComparison = compareMotionObservations(sourceMotion, cloneMotion, sourceRunId, cloneRunId);
+  const comparisonRoutes = [...new Set([...(sourceRoutes?.routes ?? []), ...(cloneRoutes?.routes ?? [])].map((route) => route.route).filter(Boolean))];
+  const sourceDomCoverage = domSnapshotCoverage(sourceDomSnapshot, comparisonRoutes);
+  const cloneDomCoverage = domSnapshotCoverage(cloneDomSnapshot, comparisonRoutes);
+  const domSnapshotComparison = {
+    configured: Boolean(sourceDomSnapshot || cloneDomSnapshot),
+    source: sourceDomCoverage,
+    clone: cloneDomCoverage,
+    expectedRoutes: comparisonRoutes,
+    complete: Boolean(sourceDomCoverage.complete && cloneDomCoverage.complete && sourceDomCoverage.routesMatch && cloneDomCoverage.routesMatch),
+  };
   const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings, ...motionComparison.findings];
   return {
     schemaVersion: 1,
@@ -352,6 +363,7 @@ export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceContro
     findings,
     visualCoverage: visualComparison.coverage,
     motionCoverage: motionComparison.coverage,
+    domSnapshotCoverage: domSnapshotComparison,
     visualArtifacts: visualComparison.visualArtifacts,
   };
 }
@@ -433,11 +445,13 @@ export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneR
   const cloneVisual = readOptionalJson(root, siteKey, cloneManifest, 'measurements/visual-regions.json');
   const sourceMotion = readOptionalJson(root, siteKey, sourceManifest, 'measurements/motion.json');
   const cloneMotion = readOptionalJson(root, siteKey, cloneManifest, 'measurements/motion.json');
+  const sourceDomSnapshot = readOptionalJson(root, siteKey, sourceManifest, 'measurements/dom-snapshots.json');
+  const cloneDomSnapshot = readOptionalJson(root, siteKey, cloneManifest, 'measurements/dom-snapshots.json');
   const sourceAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: sourceRunId, auditRunId: sourceAuditRunId, policy });
   const cloneAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: cloneRunId, auditRunId: cloneAuditRunId, policy });
   const sourceControlAudit = sourceAuditSelection?.bundle ?? null;
   const cloneControlAudit = cloneAuditSelection?.bundle ?? null;
-  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceMotion, cloneMotion, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
+  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceMotion, cloneMotion, sourceDomSnapshot, cloneDomSnapshot, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
   return {
     ...report,
     source: { runId: sourceRunId, target: sourceManifest.target, scope: sourceManifest.scope },
