@@ -43,6 +43,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Cloner self-tests
+        run: npm run test:cloner
+
       - name: Lint
         run: npm run lint
 
@@ -51,3 +54,27 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  browser-integration:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium for cloner integration
+        run: npx playwright install --with-deps chromium
+
+      - name: Cloner browser integration
+        run: npm run test:cloner:integration

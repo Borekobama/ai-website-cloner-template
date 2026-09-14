@@ -1,8 +1,29 @@
 # Website Inspection Guide
 
+This guide covers the visual/bootstrap side of cloning. For repeatable source
+and clone parity, use the repository-owned Playwright CLI first:
+
+```bash
+npm run cloner -- help
+npm run cloner -- selftest
+```
+
+The CLI's immutable run manifests and machine measurements are evidence. The
+Markdown documents below are builder guidance and derived research; they do
+not replace a run artifact. Keep the source/clone relationship, route scope,
+inventory run ID, and known exceptions visible when recording findings.
+
+Parity findings identify source-vs-clone mismatches. Clone-health findings
+identify clone implementation-quality observations. Clone-health findings do
+not automatically block a parity milestone when source and clone intentionally
+share a defect.
+
 ## How to Reverse-Engineer Any Website
 
-This guide outlines what to capture when inspecting a target website via Chrome MCP or browser DevTools.
+Use Chrome MCP or browser DevTools for exploratory visual inspection. Use
+Playwright through `tools/cloner` for authoritative measurements and automated
+interactions. Do not interact with an authenticated source until the
+safe-action policy classifies the control.
 
 ## Phase 1: Visual Audit
 
@@ -78,3 +99,28 @@ After inspection, create these files in `docs/research/`:
 3. `LAYOUT_ARCHITECTURE.md` — Page layouts, grid system, responsive behavior
 4. `INTERACTION_PATTERNS.md` — Animations, transitions, hover states
 5. `TECH_STACK_ANALYSIS.md` — What the site uses and our chosen equivalents
+
+## Parity measurement checklist
+
+Before accepting a parity milestone:
+
+- [ ] `npm run cloner -- selftest` passes
+- [ ] Source measurement has a healthy session, expected tenant/workspace and role when configured
+- [ ] Clone measurement has a healthy server, loaded client JavaScript, and a hydrated route
+- [ ] Source and clone each have a new immutable run with exact commit/dirty-state identity
+- [ ] Authoritative baselines were explicitly measured with `--inventory`; ad-hoc/subset runs did not advance `current`
+- [ ] Requested route scope and authoritative inventory denominator/provenance are recorded in `coverage.json`
+- [ ] `audit dead-controls` uses actionability/trial checks, re-verifies source identity before every isolated source trial, and reports blocked, disabled, unreachable, trial-invalid, already-active and dead separately
+- [ ] Clone-health dead-control closure requires an exercised non-dead observation or a fully completed compatible route audit with the control absent; blocked-by-policy, trial-invalid, partial, and failed coverage cannot close it
+- [ ] Dead-class evidence records stylesheet readability counts and suppresses authoritative findings when `cssCoverageComplete` is false
+- [ ] Diff reports record comparator coverage plus selected control-audit IDs/covered routes; finding closure requires compatible reproducing evidence
+- [ ] Each dead-control occurrence is exercised from a fresh baseline context and the exact occurrence is re-located before policy/action
+- [ ] `audit dead-classes` preserves route provenance and aggregates only after the requested sweep
+- [ ] `diff` preserves duplicate control occurrences, cites concrete run IDs, and uses gate/informational/ignore policies for richer action effects; network behavior is not a universal gate
+- [ ] Every run stores its normalized policy snapshot; conflicting equally specific source-action rules fail closed
+- [ ] Failed runs retain incrementally persisted completed-route evidence and accurately name failed routes
+- [ ] Findings are appended to `docs/research/<site-key>/_parity/ledger.jsonl`
+- [ ] Visual QA is reported as an additional signal, not as permanent completion
+
+Never use historical prose counts as fixture expectations. Freeze a failing
+instrument result with `fixture freeze` before repairing the instrument.
