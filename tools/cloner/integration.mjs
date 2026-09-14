@@ -145,7 +145,7 @@ async function main() {
       assert.ok(initialCategories.has(category), `expected initial finding ${category}`);
     }
 
-    const cloneObservations = cloneAudit.json.audits.flatMap((entry) => entry.observations);
+    const cloneObservations = cloneAudit.audits.flatMap((entry) => entry.observations);
     const dead = cloneObservations.find((observation) => observation.name === 'Dead button');
     assert.equal(dead?.category, 'dead');
     const noisyDead = cloneObservations.find((observation) => observation.name === 'Noisy dead button');
