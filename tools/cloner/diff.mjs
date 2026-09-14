@@ -216,6 +216,24 @@ function compareRoutes(source, clone, sourceRunId, cloneRunId) {
         },
       });
     }
+    const leftDestination = normalizedDestination(left.finalUrl);
+    const rightDestination = normalizedDestination(right.finalUrl);
+    const destinationComparator = comparator('route-inventory', 'route-destination', 'destination', 'gate');
+    comparatorCoverage.push({ comparator: destinationComparator, subject });
+    if (leftDestination !== rightDestination) {
+      findings.push({
+        category: 'route-destination-mismatch',
+        subject,
+        status: 'open',
+        policy: { dimension: 'destination', mode: 'gate' },
+        comparator: destinationComparator,
+        observed: { source: leftDestination, clone: rightDestination },
+        evidence: {
+          source: evidence(sourceRunId, 'measurements/routes.json', `#/routes/${source.routes.indexOf(left)}/finalUrl`),
+          clone: evidence(cloneRunId, 'measurements/routes.json', `#/routes/${clone.routes.indexOf(right)}/finalUrl`),
+        },
+      });
+    }
   }
   return { findings, comparatorCoverage };
 }
@@ -503,6 +521,7 @@ function inferFindingComparator(finding) {
       : comparator('static-control', 'control-static', controlMatch[1], finding?.policy?.mode ?? null);
   }
   if (category === 'route-missing' || category === 'route-status-mismatch') return comparator('route-inventory', 'route-status', 'status');
+  if (category === 'route-destination-mismatch') return comparator('route-inventory', 'route-destination', 'destination', 'gate');
   if (category === 'new-dead-runtime-class') return comparator('compiled-css', 'dead-runtime-class', 'class-presence');
   if (category === 'visual-region-mismatch') return comparator('visual-region', 'visual-region', 'pixels', finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category === 'visual-region-incomplete') return comparator('visual-region', 'visual-region', 'pixels', finding?.comparator?.mode ?? 'informational');
