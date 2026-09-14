@@ -58,18 +58,31 @@ function indexedControls(value) {
   });
 }
 
+function controlSubjectKey(control) {
+  return `${control.route ?? ''}|${control.role ?? ''}|${control.name ?? ''}|${control.controlClass ?? 'default'}|${control.occurrence ?? 0}`;
+}
+
 function auditObservationMap(bundle) {
-  const byIndex = new Map();
-  if (!bundle?.routes) return byIndex;
+  const bySubject = new Map();
+  if (!bundle?.routes) return bySubject;
   for (const [routeIndex, routeAudit] of bundle.routes.entries()) {
     for (const [observationIndex, observation] of (routeAudit.observations ?? []).entries()) {
-      byIndex.set(`${observation.route ?? routeAudit.route}|${observation.index}`, {
+      bySubject.set(controlSubjectKey({ ...observation, route: observation.route ?? routeAudit.route }), {
         observation,
         evidence: evidence(bundle.runId, 'audits/dead-controls.json', `#/routes/${routeIndex}/observations/${observationIndex}`),
       });
     }
   }
-  return byIndex;
+  return bySubject;
+}
+
+function compatibleAuditEntry(control, entry) {
+  if (!entry) return null;
+  const observation = entry.observation ?? {};
+  if (observation.href !== undefined && control.href !== undefined && observation.href !== control.href) return null;
+  if (observation.structure !== undefined && control.structure !== undefined
+    && canonicalJson(observation.structure) !== canonicalJson(control.structure)) return null;
+  return entry;
 }
 
 function richerValues(control, actionObservation, useActionEvidence) {
@@ -129,8 +142,10 @@ function compareControls(source, clone, sourceRunId, cloneRunId, policy = {}, so
     const cloneLocator = `#/observations/${cloneEntry.index}`;
     comparatorCoverage.push({ comparator: presenceComparator, subject });
     const dimensions = dimensionsForControl(policy, sourceControl.controlClass ?? 'default');
-    const sourceAction = sourceAuditByIndex.get(`${sourceControl.route}|${sourceControl.index}`)?.observation ?? null;
-    const cloneAction = cloneAuditByIndex.get(`${cloneControl.route}|${cloneControl.index}`)?.observation ?? null;
+    const sourceActionEntry = compatibleAuditEntry(sourceControl, sourceAuditByIndex.get(controlSubjectKey({ ...sourceControl, occurrence: sourceEntry.occurrence })));
+    const cloneActionEntry = compatibleAuditEntry(cloneControl, cloneAuditByIndex.get(controlSubjectKey({ ...cloneControl, occurrence: cloneEntry.occurrence })));
+    const sourceAction = sourceActionEntry?.observation ?? null;
+    const cloneAction = cloneActionEntry?.observation ?? null;
     const useActionEvidence = Boolean(sourceAction?.actionExecuted && cloneAction?.actionExecuted);
     const sourceValues = richerValues(sourceControl, sourceAction, useActionEvidence);
     const cloneValues = richerValues(cloneControl, cloneAction, useActionEvidence);
@@ -144,8 +159,8 @@ function compareControls(source, clone, sourceRunId, cloneRunId, policy = {}, so
         : comparator('static-control', 'control-static', dimension, mode);
       comparatorCoverage.push({ comparator: findingComparator, subject });
       if (!comparison.equal && mode !== 'ignore') {
-        const sourceActionEvidence = sourceAuditByIndex.get(`${sourceControl.route}|${sourceControl.index}`)?.evidence;
-        const cloneActionEvidence = cloneAuditByIndex.get(`${cloneControl.route}|${cloneControl.index}`)?.evidence;
+        const sourceActionEvidence = sourceActionEntry?.evidence;
+        const cloneActionEvidence = cloneActionEntry?.evidence;
         findings.push({
           category: `control-${dimension}-mismatch`,
           subject,
@@ -555,11 +570,19 @@ function comparatorSubjectsMatch(instrument, expected = {}, actual = {}) {
 }
 
 function reportComparisonScope(report, route) {
+  const targetContext = (target) => target ? {
+    kind: target.kind ?? null,
+    origin: target.origin ?? null,
+    profileId: target.profileId ?? null,
+    tenant: target.tenant ?? null,
+    role: target.role ?? null,
+  } : null;
   const side = (entry, details) => {
     const coveredRoutes = (entry?.scope?.routesCompleted ?? entry?.scope?.routesRequested ?? []).map(visualRoutePath);
     const scope = details?.scope ?? null;
     return {
       targetKind: entry?.target?.kind ?? null,
+      targetContext: targetContext(entry?.target),
       scope,
       inventoryBacked: scope !== null && scope !== 'ad-hoc',
       inventoryRunId: details?.inventory?.runId ?? entry?.scope?.inventoryRunId ?? null,
@@ -576,10 +599,27 @@ function comparisonScopesCompatible(previous, current) {
   if (!previous) return current.source.routeCovered && current.clone.routeCovered;
   for (const side of ['source', 'clone']) {
     if (previous[side]?.targetKind && current[side]?.targetKind && previous[side].targetKind !== current[side].targetKind) return false;
+    if (previous[side]?.targetContext && canonicalJson(previous[side].targetContext) !== canonicalJson(current[side]?.targetContext ?? null)) return false;
     if (previous[side]?.inventoryBacked && !current[side]?.inventoryBacked) return false;
     if (!current[side]?.routeCovered) return false;
   }
   return true;
+}
+
+function comparisonIdentity(report) {
+  const targetContext = (target) => target ? {
+    kind: target.kind ?? null,
+    origin: target.origin ?? null,
+    profileId: target.profileId ?? null,
+    tenant: target.tenant ?? null,
+    role: target.role ?? null,
+  } : null;
+  return {
+    sourceKind: report.source?.target?.kind ?? null,
+    cloneKind: report.clone?.target?.kind ?? null,
+    sourceContext: targetContext(report.source?.target),
+    cloneContext: targetContext(report.clone?.target),
+  };
 }
 
 export function findingCanClose(previousSummary, report) {
@@ -602,16 +642,14 @@ export function findingCanClose(previousSummary, report) {
 }
 
 export function findingEventsFromReport(report) {
+  const comparison = comparisonIdentity(report);
   return report.findings.map((finding, index) => ({
     type: 'finding.opened',
     findingId: stableFindingId({
       ...finding,
       domain: 'parity',
       target: 'comparison',
-      comparison: {
-        sourceKind: report.source?.target?.kind ?? null,
-        cloneKind: report.clone?.target?.kind ?? null,
-      },
+      comparison,
     }) || `F-${String(index + 1).padStart(4, '0')}`,
     sourceRunId: report.sourceRunId,
     cloneRunId: report.cloneRunId,
@@ -619,10 +657,7 @@ export function findingEventsFromReport(report) {
       ...finding,
       domain: 'parity',
       target: 'comparison',
-      comparison: {
-        sourceKind: report.source?.target?.kind ?? null,
-        cloneKind: report.clone?.target?.kind ?? null,
-      },
+      comparison,
       comparisonScope: reportComparisonScope(report, finding.subject?.route ?? finding.route ?? null),
     },
   }));

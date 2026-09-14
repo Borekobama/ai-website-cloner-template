@@ -50,36 +50,54 @@ export async function captureMotion(page, { route, sample = false } = {}) {
     const angleInDegrees = (value) => {
       if (!value || value === 'none') return 0;
       const match = /^(-?[\d.]+)(deg|rad|turn)$/u.exec(value.trim());
-      if (!match) return 0;
+      if (!match) return null;
       const amount = Number(match[1]);
       return match[2] === 'rad' ? amount * 180 / Math.PI : match[2] === 'turn' ? amount * 360 : amount;
     };
-    const length = (value) => Number.parseFloat(value) || 0;
+    const length = (value) => {
+      const normalized = String(value ?? '').trim();
+      if (!normalized || normalized === '0' || /^-?0(?:[a-z%]+)?$/iu.test(normalized)) return 0;
+      if (!/^-?(?:\d+|\d*\.\d+)px$/iu.test(normalized)) return null;
+      return Number.parseFloat(normalized);
+    };
     const canonicalTransform = (style) => {
       try {
         let matrix = new DOMMatrix();
         if (style.translate && style.translate !== 'none') {
           const values = style.translate.trim().split(/\s+/u);
-          matrix = matrix.translate(length(values[0]), length(values[1]), length(values[2]));
+          const translateValues = values.map(length);
+          if (translateValues.some((value) => value === null)) return `raw:${style.transform}|translate:${style.translate}|rotate:${style.rotate}|scale:${style.scale}`;
+          matrix = matrix.translate(translateValues[0], translateValues[1] ?? 0, translateValues[2] ?? 0);
         }
         if (style.rotate && style.rotate !== 'none') {
           const values = style.rotate.trim().split(/\s+/u);
-          if (values.length === 1) matrix = matrix.rotate(angleInDegrees(values[0]));
+          if (values.length === 1) {
+            const angle = angleInDegrees(values[0]);
+            if (angle === null) return `raw:${style.transform}|translate:${style.translate}|rotate:${style.rotate}|scale:${style.scale}`;
+            matrix = matrix.rotate(angle);
+          }
           else if (values.length === 2 && ['x', 'y', 'z'].includes(values[0].toLowerCase())) {
             const axis = values[0].toLowerCase();
-            matrix = matrix.rotateAxisAngle(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0, angleInDegrees(values[1]));
+            const angle = angleInDegrees(values[1]);
+            if (angle === null) return `raw:${style.transform}|translate:${style.translate}|rotate:${style.rotate}|scale:${style.scale}`;
+            matrix = matrix.rotateAxisAngle(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0, angle);
           }
-          else if (values.length === 4) matrix = matrix.rotateAxisAngle(Number(values[0]), Number(values[1]), Number(values[2]), angleInDegrees(values[3]));
+          else if (values.length === 4) {
+            const angle = angleInDegrees(values[3]);
+            if (angle === null || values.slice(0, 3).some((value) => !Number.isFinite(Number(value)))) return `raw:${style.transform}|translate:${style.translate}|rotate:${style.rotate}|scale:${style.scale}`;
+            matrix = matrix.rotateAxisAngle(Number(values[0]), Number(values[1]), Number(values[2]), angle);
+          }
         }
         if (style.scale && style.scale !== 'none') {
           const values = style.scale.trim().split(/\s+/u).map(Number);
+          if (values.some((value) => !Number.isFinite(value))) return `raw:${style.transform}|translate:${style.translate}|rotate:${style.rotate}|scale:${style.scale}`;
           matrix = matrix.scale(values[0] ?? 1, values[1] ?? values[0] ?? 1, values[2] ?? 1);
         }
         if (style.transform && style.transform !== 'none') matrix = matrix.multiply(new DOMMatrix(style.transform));
         return [matrix.m11, matrix.m12, matrix.m13, matrix.m14, matrix.m21, matrix.m22, matrix.m23, matrix.m24, matrix.m31, matrix.m32, matrix.m33, matrix.m34, matrix.m41, matrix.m42, matrix.m43, matrix.m44]
           .map((value) => Number(value.toFixed(6))).join(',');
       } catch {
-        return style.transform || 'none';
+        return `raw:${style.transform}|translate:${style.translate}|rotate:${style.rotate}|scale:${style.scale}`;
       }
     };
     const rect = (element) => {
@@ -149,6 +167,8 @@ export async function captureMotion(page, { route, sample = false } = {}) {
       const occurrence = semanticOccurrences.get(semanticKey) ?? 0;
       semanticOccurrences.set(semanticKey, occurrence + 1);
       const declared = Object.fromEntries([...animationFields, ...transitionFields].map((field) => [field, style[field]]));
+      const activeMotion = style.animationName !== 'none' || style.transitionDuration !== '0s';
+      const samples = readSamples(element);
       return [{
         identity: {
           path: domPath(element),
@@ -161,6 +181,8 @@ export async function captureMotion(page, { route, sample = false } = {}) {
         declared,
         state,
         transformLonghands: { translate: style.translate, rotate: style.rotate, scale: style.scale },
+        transformGate: activeMotion ? (sampleAnimations ? samples : null) : canonicalTransform(style),
+        transformGateComplete: !activeMotion || sampleAnimations,
         rendered: {
           transform: canonicalTransform(style),
           opacity: style.opacity,
@@ -239,7 +261,7 @@ export function compareMotionObservations(source, clone, sourceRunId, cloneRunId
     }
     return { runId, artifact: 'measurements/motion.json', locator: '#' };
   };
-  const compareDimension = (sourceObservation, cloneObservation, dimension, mode, sourceValue, cloneValue) => {
+  const compareDimension = (sourceObservation, cloneObservation, dimension, mode, sourceValue, cloneValue, completeOverride = null) => {
     const subject = motionSubject(sourceObservation ?? cloneObservation);
     const comparator = { instrument: 'motion', evidenceClass: 'motion', dimension, mode };
     const complete = Boolean(sourceObservation && cloneObservation)
@@ -247,7 +269,7 @@ export function compareMotionObservations(source, clone, sourceRunId, cloneRunId
       && clone?.complete !== false
       && sourceObservation.routeComplete !== false
       && cloneObservation.routeComplete !== false;
-    const coverage = { comparator, subject, complete };
+    const coverage = { comparator, subject, complete: completeOverride === null ? complete : complete && completeOverride };
     comparatorCoverage.push(coverage);
     if (!sourceObservation || !cloneObservation) return;
     if (canonicalJson(sourceValue) === canonicalJson(cloneValue)) return;
@@ -287,7 +309,15 @@ export function compareMotionObservations(source, clone, sourceRunId, cloneRunId
     comparatorCoverage.push({ comparator: { instrument: 'motion', evidenceClass: 'motion', dimension: 'presence', mode: 'gate' }, subject: motionSubject(sourceObservation), complete: source?.complete !== false && clone?.complete !== false && sourceObservation.routeComplete !== false && cloneObservation.routeComplete !== false });
     compareDimension(sourceObservation, cloneObservation, 'declared', 'gate', sourceObservation.declared, cloneObservation.declared);
     compareDimension(sourceObservation, cloneObservation, 'state', 'gate', sourceObservation.state, cloneObservation.state);
-    compareDimension(sourceObservation, cloneObservation, 'transform', 'gate', sourceObservation.rendered.transform, cloneObservation.rendered.transform);
+    compareDimension(
+      sourceObservation,
+      cloneObservation,
+      'transform',
+      'gate',
+      Object.hasOwn(sourceObservation, 'transformGate') ? sourceObservation.transformGate : sourceObservation.rendered.transform,
+      Object.hasOwn(cloneObservation, 'transformGate') ? cloneObservation.transformGate : cloneObservation.rendered.transform,
+      sourceObservation.transformGateComplete !== false && cloneObservation.transformGateComplete !== false,
+    );
     compareDimension(sourceObservation, cloneObservation, 'rendered', 'informational', sourceObservation.rendered, cloneObservation.rendered);
     if (sourceObservation.samples?.length || cloneObservation.samples?.length) {
       compareDimension(sourceObservation, cloneObservation, 'samples', 'informational', sourceObservation.samples, cloneObservation.samples);

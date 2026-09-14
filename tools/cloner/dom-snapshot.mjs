@@ -29,43 +29,70 @@ function redactSensitiveFields(snapshot) {
   const originalStrings = [...strings];
   const replacements = new Set();
   const sensitiveNodeIndices = new Map();
+  const textNodeIndices = new Set();
   for (const document of snapshot.documents ?? []) {
     const nodes = document.nodes ?? {};
     const nodeNames = nodes.nodeName ?? [];
     const attributes = nodes.attributes ?? [];
+    const parents = nodes.parentIndex ?? [];
     for (let index = 0; index < nodeNames.length; index += 1) {
       const nodeName = String(stringAt(originalStrings, nodeNames[index]) ?? '').toLowerCase();
       const pairs = attributes[index] ?? [];
       const fields = new Map();
-      const visitPair = (pair, valueIndex) => {
-        const name = String(stringAt(originalStrings, pair[0]) ?? '').toLowerCase();
-        fields.set(name, stringAt(originalStrings, pair[valueIndex]));
-        if ((name === 'value' && (nodeName === 'input' || nodeName === 'textarea')) || SENSITIVE_FIELD.test(name)) {
-          pair[valueIndex] = markReplacement(pair[valueIndex], replacements);
+      const contentIndices = [];
+      const visitPair = (nameIndex, valueIndex) => {
+        const name = String(stringAt(originalStrings, nameIndex) ?? '').toLowerCase();
+        const sensitiveName = /^[a-z][a-z0-9:_-]*$/iu.test(name) && SENSITIVE_FIELD.test(name);
+        fields.set(name, stringAt(originalStrings, valueIndex));
+        if (name === 'content') contentIndices.push(valueIndex);
+        if ((name === 'value' && (nodeName === 'input' || nodeName === 'textarea')) || sensitiveName) {
+          markReplacement(valueIndex, replacements);
         }
       };
       if (Array.isArray(pairs[0])) {
         for (const pair of pairs) {
-          if (Array.isArray(pair) && pair.length >= 2) visitPair(pair, 1);
+          if (Array.isArray(pair) && pair.length >= 2) visitPair(pair[0], pair[1]);
         }
       } else {
-        for (let pairIndex = 0; pairIndex + 1 < pairs.length; pairIndex += 2) visitPair(pairs, pairIndex + 1);
+        for (let pairIndex = 0; pairIndex + 1 < pairs.length; pairIndex += 2) visitPair(pairs[pairIndex], pairs[pairIndex + 1]);
       }
       const type = String(fields.get('type') ?? '').toLowerCase();
       const sensitiveInput = nodeName === 'input' || nodeName === 'textarea';
       const hiddenInput = type === 'hidden' || type === 'password' || SENSITIVE_FIELD.test(String(fields.get('name') ?? ''));
       if (sensitiveInput || hiddenInput) sensitiveNodeIndices.set(index, true);
+      const metadataName = [fields.get('name'), fields.get('property'), fields.get('http-equiv')]
+        .filter(Boolean)
+        .some((value) => SENSITIVE_FIELD.test(String(value)));
+      if (nodeName === 'meta' && metadataName) {
+        for (const valueIndex of contentIndices) markReplacement(valueIndex, replacements);
+      }
+      if (nodeName === 'script' || nodeName === 'style') textNodeIndices.add(index);
+    }
+    for (let index = 0; index < nodeNames.length; index += 1) {
+      const nodeName = String(stringAt(originalStrings, nodeNames[index]) ?? '').toLowerCase();
+      let parent = parents[index];
+      while (Number.isInteger(parent) && parent >= 0 && parent < nodeNames.length) {
+        const parentName = String(stringAt(originalStrings, nodeNames[parent]) ?? '').toLowerCase();
+        if (parentName === 'script' || parentName === 'style') {
+          textNodeIndices.add(index);
+          break;
+        }
+        parent = parents[parent];
+      }
+      if (nodeName === 'script' || nodeName === 'style') textNodeIndices.add(index);
     }
     for (const field of ['inputValue', 'textValue']) {
       const data = nodes[field];
       if (!data) continue;
       if (Array.isArray(data)) {
         for (const [index, value] of data.entries()) {
-          if (sensitiveNodeIndices.has(index) && value !== undefined) data[index] = markReplacement(value, replacements);
+          if ((sensitiveNodeIndices.has(index) || (field === 'textValue' && textNodeIndices.has(index))) && value !== undefined) {
+            data[index] = markReplacement(value, replacements);
+          }
         }
       } else {
         for (const [valueIndex, nodeIndex] of (data.index ?? []).entries()) {
-          if (sensitiveNodeIndices.has(nodeIndex) && data.value?.[valueIndex] !== undefined) {
+          if ((sensitiveNodeIndices.has(nodeIndex) || (field === 'textValue' && textNodeIndices.has(nodeIndex))) && data.value?.[valueIndex] !== undefined) {
             data.value[valueIndex] = markReplacement(data.value[valueIndex], replacements);
           }
         }
@@ -226,6 +253,7 @@ export async function captureDomSnapshot(page, { route } = {}) {
       kind: 'dom-snapshot-observation',
       route,
       url: safeUrl(page.url()),
+      complete: true,
       summary: snapshotSummary(snapshot),
       structure: structureSummary(snapshot),
       snapshot,

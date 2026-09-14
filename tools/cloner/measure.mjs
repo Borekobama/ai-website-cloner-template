@@ -141,8 +141,8 @@ export async function collectClasses(page, route) {
     const classPattern = /\.((?:\\.|[A-Za-z_-])(?:\\.|[A-Za-z0-9_-])*)/gu;
     const collectRules = (rules) => {
       for (const rule of [...rules]) {
-        const text = rule.cssText || '';
-        for (const match of text.matchAll(classPattern)) {
+        const selectorText = typeof rule.selectorText === 'string' ? rule.selectorText : '';
+        for (const match of selectorText.matchAll(classPattern)) {
           compiledClasses.add(match[1].replace(/\\([0-9a-f]{1,6})\s?/giu, (_, codePoint) => String.fromCodePoint(Number.parseInt(codePoint, 16))).replace(/\\([^\n])/gu, '$1'));
         }
         if (rule.cssRules) collectRules(rule.cssRules);
@@ -302,11 +302,17 @@ function preconditionError(message, runId) {
   return error;
 }
 
-function readInventoryContext(root, siteKey, inventoryRunId, target, requestedRoutes) {
+function readInventoryContext(root, siteKey, inventoryRunId, { target, origin, profileId, tenant, role }, requestedRoutes) {
   const manifest = readManifest(root, siteKey, inventoryRunId);
   if (manifest.status !== 'closed') throw new Error(`Inventory run must be closed: ${inventoryRunId}`);
   if (manifest.target?.kind && manifest.target.kind !== target) {
     throw new Error(`Inventory run ${inventoryRunId} is a ${manifest.target.kind} run, not a ${target} run`);
+  }
+  const inventoryOrigin = manifest.target?.origin ? new URL(manifest.target.origin).origin : null;
+  if (inventoryOrigin !== origin) throw new Error(`Inventory run ${inventoryRunId} origin does not match ${origin}`);
+  if ((manifest.target?.profileId ?? null) !== (profileId ?? null)) throw new Error(`Inventory run ${inventoryRunId} profile does not match`);
+  if ((manifest.target?.tenant ?? null) !== (tenant ?? null) || (manifest.target?.role ?? null) !== (role ?? null)) {
+    throw new Error(`Inventory run ${inventoryRunId} identity context does not match`);
   }
   if (manifest.scope?.inventoryRunId !== inventoryRunId || manifest.scope?.authoritativeInventory !== true) {
     throw new Error(`Inventory run must be an explicit authoritative inventory: ${inventoryRunId}`);
@@ -372,6 +378,10 @@ function readOptionalRouteJson(root, siteKey, manifest, path) {
   return JSON.parse(readArtifact(root, siteKey, manifest.runId, path).toString('utf8'));
 }
 
+function assertCompleteOptionalEvidence(value, path) {
+  if (value?.complete !== true) throw new Error(`Optional route evidence is incomplete: ${path}`);
+}
+
 function loadReusableRouteEvidence(root, siteKey, manifest, requestedRoutes, { modules, visualRoutes = new Set() } = {}) {
   const entries = [];
   for (const artifact of manifest.artifacts ?? []) {
@@ -390,7 +400,10 @@ function loadReusableRouteEvidence(root, siteKey, manifest, requestedRoutes, { m
         modules?.visual && visualRoutes.has(routeRecord.route) ? `measurements/visual-regions/${oldKey}.json` : null,
       ].filter(Boolean);
       if (!optional.every((path) => manifest.artifacts.some((candidate) => candidate.path === path))) continue;
-      for (const path of [...required, ...optional]) JSON.parse(readArtifact(root, siteKey, manifest.runId, path).toString('utf8'));
+      for (const path of [...required, ...optional]) {
+        const value = JSON.parse(readArtifact(root, siteKey, manifest.runId, path).toString('utf8'));
+        if (optional.includes(path)) assertCompleteOptionalEvidence(value, path);
+      }
       const visualPath = optional.find((path) => path.startsWith('measurements/visual-regions/'));
       if (visualPath) {
         const visual = JSON.parse(readArtifact(root, siteKey, manifest.runId, visualPath).toString('utf8'));
@@ -510,7 +523,7 @@ export async function measureTarget({
     if (server === 'managed') throw new Error('Managed clone server cannot resume prior browser evidence');
   }
   const inventoryContext = inventoryRunId
-    ? readInventoryContext(root, siteKey, inventoryRunId, target, requestedRoutes)
+    ? readInventoryContext(root, siteKey, inventoryRunId, { target, origin: base.origin, profileId, tenant, role }, requestedRoutes)
     : null;
   const scope = {
     inventoryRunId: authoritativeInventory ? runId : inventoryRunId,

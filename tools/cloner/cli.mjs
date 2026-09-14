@@ -32,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.12.0
+AI Website Cloner parity CLI v0.12.1
 
 Usage:
   npm run cloner -- <command> [options]
@@ -506,6 +506,20 @@ function commandDiff(options) {
   const currentComparison = currentEvents[0]?.finding?.comparison ?? {
     sourceKind: report.source?.target?.kind ?? null,
     cloneKind: report.clone?.target?.kind ?? null,
+    sourceContext: {
+      kind: report.source?.target?.kind ?? null,
+      origin: report.source?.target?.origin ?? null,
+      profileId: report.source?.target?.profileId ?? null,
+      tenant: report.source?.target?.tenant ?? null,
+      role: report.source?.target?.role ?? null,
+    },
+    cloneContext: {
+      kind: report.clone?.target?.kind ?? null,
+      origin: report.clone?.target?.origin ?? null,
+      profileId: report.clone?.target?.profileId ?? null,
+      tenant: report.clone?.target?.tenant ?? null,
+      role: report.clone?.target?.role ?? null,
+    },
   };
   for (const finding of previous.values()) {
     if (finding.status === 'closed' || currentIds.has(finding.findingId)) continue;

@@ -9,9 +9,10 @@ import { classifyControl, compareEffectSignatures } from './audits/dead-controls
 import { compareMeasurementData, findingCanClose, selectControlAudit } from './diff.mjs';
 import { assertResumeCompatibility } from './measure.mjs';
 import { compareMotionObservations } from './motion.mjs';
-import { appendLedgerEvent, auditFindingCanClose, readLedger, stableFindingId, summarizeFindings } from './ledger.mjs';
+import { appendLedgerEvent, auditFindingCanClose, readLedger, recordFindingStatus, stableFindingId, summarizeFindings } from './ledger.mjs';
 import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
+import { captureDomSnapshot } from './dom-snapshot.mjs';
 import { closeRun, createRun, failRun, freezeFixture, readArtifact, readManifest, resolveRunId, setRef, updateRun, writeArtifact } from './run-store.mjs';
 import { startFixtureServer } from './test-app/server.mjs';
 import { captureVisualRegions, compareVisualRegionImages, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
@@ -55,6 +56,32 @@ test('redaction happens before persistence and removes credential-bearing URLs',
   assert.equal(containsSensitiveMaterial(safe), false);
   const header = redactForPersistence('Authorization: Bearer secret Cookie: session=secret');
   assert.equal(containsSensitiveMaterial(header), false);
+});
+
+test('DOMSnapshot redaction removes sensitive metadata and script text', async () => {
+  const snapshot = await captureDomSnapshot({
+    url: () => 'https://fixture.test/home',
+    context: () => ({
+      newCDPSession: async () => ({
+        send: async () => ({
+          strings: ['META', 'name', 'csrf-token', 'content', 'fixture-secret', 'SCRIPT', '#text', 'script-secret'],
+          documents: [{
+            nodes: {
+              nodeName: [0, 5, 6],
+              parentIndex: [-1, -1, 1],
+              attributes: [[1, 2, 3, 4], [], []],
+              textValue: { index: [2], value: [7] },
+            },
+          }],
+        }),
+        detach: async () => {},
+      }),
+    }),
+  }, { route: '/home' });
+  assert.equal(snapshot.snapshot.strings[4], '[REDACTED]');
+  assert.equal(snapshot.snapshot.strings[7], '[REDACTED]');
+  assert.equal(JSON.stringify(snapshot).includes('fixture-secret'), false);
+  assert.equal(JSON.stringify(snapshot).includes('script-secret'), false);
 });
 
 function visualPng(color) {
@@ -401,7 +428,7 @@ test('resume accepts redacted origins and rejects changed repository identity', 
     runId: '20260914T000009Z_clone_99999999',
     status: 'failed',
     kind: 'clone',
-    engine: { version: '0.12.0' },
+    engine: { version: '0.12.1' },
     target: {
       kind: 'clone',
       origin: 'http://127.0.0.1:3000/',
@@ -496,6 +523,24 @@ test('ledger remains append-only and reconstructs finding status from events', (
   }
 });
 
+test('manual finding status requires existing finding and closed evidence run', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cloner-ledger-status-test-'));
+  const siteKey = 'ledger-status.example';
+  const runId = '20260914T000004Z_measure_44444444';
+  try {
+    createRun({ root, siteKey, runId });
+    writeArtifact(root, siteKey, runId, 'coverage.json', { scope: 'comparison' });
+    closeRun(root, siteKey, runId);
+    appendLedgerEvent(root, siteKey, { type: 'finding.opened', findingId: 'F-existing', runId, finding: { category: 'dead-control' } });
+    assert.throws(() => recordFindingStatus(root, siteKey, 'F-missing', 'closed', runId), /Finding does not exist/);
+    assert.throws(() => recordFindingStatus(root, siteKey, 'F-existing', 'closed', '20260914T000005Z_measure_55555555'), /Run manifest not found/);
+    assert.equal(recordFindingStatus(root, siteKey, 'F-existing', 'closed', runId).type, 'finding.closed');
+    assert.throws(() => recordFindingStatus(root, siteKey, 'F-existing', 'verified', runId), /already closed/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('stable finding IDs distinguish flat dead-control subjects', () => {
   const first = stableFindingId({ category: 'dead-control', route: '/home', role: 'button', name: 'New chat' });
   const second = stableFindingId({ category: 'dead-control', route: '/billing', role: 'button', name: 'Manage billing info' });
@@ -549,6 +594,25 @@ test('clone-health finding IDs preserve stable identity across inventory revisio
   assert.notEqual(
     stableFindingId({ ...base, audit: { ...base.audit, evidenceClass: 'dead-runtime-class' } }),
     stableFindingId(base),
+  );
+});
+
+test('parity finding IDs preserve authenticated comparison context', () => {
+  const base = {
+    domain: 'parity',
+    target: 'comparison',
+    category: 'control-aria-mismatch',
+    subject: { route: '/home', role: 'button', name: 'Save', controlClass: 'default', occurrence: 0 },
+    comparison: {
+      sourceKind: 'source',
+      cloneKind: 'clone',
+      sourceContext: { kind: 'source', origin: 'https://app.test', tenant: 'tenant-a', role: 'admin', profileId: 'source-admin' },
+      cloneContext: { kind: 'clone', origin: 'https://clone.test', tenant: 'tenant-a', role: 'admin', profileId: 'clone-admin' },
+    },
+  };
+  assert.notEqual(
+    stableFindingId(base),
+    stableFindingId({ ...base, comparison: { ...base.comparison, sourceContext: { ...base.comparison.sourceContext, role: 'viewer' } } }),
   );
 });
 
@@ -786,8 +850,8 @@ test('control diff uses richer audit effects under policy and cites the audit ru
     cloneControls: { observations: [{ route: '/home', index: 0, role: 'button', name: 'Open', href: null, visible: true, controlClass: 'menu', structure: { tag: 'button', childElementCount: 1 } }] },
     sourceClasses: { routes: [] },
     cloneClasses: { routes: [] },
-    sourceControlAudit: { runId: sourceAuditRunId, routes: [{ route: '/home', observations: [{ route: '/home', index: 0, actionExecuted: true, effect: { overlayOpened: true, domChanged: true }, evidence: { after: { url: 'https://source.test/home', overlays: [{ role: 'menu', name: 'Actions' }], domFingerprint: 'source-dom', network: { count: 2, requests: [{ url: 'https://source.test/api', method: 'GET', resourceType: 'fetch' }] } }, controlAfter: { ariaState: { expanded: 'true' }, className: 'open', dataState: 'open' } } }] }] },
-    cloneControlAudit: { runId: cloneAuditRunId, routes: [{ route: '/home', observations: [{ route: '/home', index: 0, actionExecuted: true, effect: { overlayOpened: false, domChanged: true }, evidence: { after: { url: 'https://clone.test/home', overlays: [], domFingerprint: 'clone-dom', network: { count: 0, requests: [] } }, controlAfter: { ariaState: { expanded: 'true' }, className: 'open', dataState: 'open' } } }] }] },
+    sourceControlAudit: { runId: sourceAuditRunId, routes: [{ route: '/home', observations: [{ route: '/home', index: 0, role: 'button', name: 'Open', controlClass: 'menu', occurrence: 0, actionExecuted: true, effect: { overlayOpened: true, domChanged: true }, evidence: { after: { url: 'https://source.test/home', overlays: [{ role: 'menu', name: 'Actions' }], domFingerprint: 'source-dom', network: { count: 2, requests: [{ url: 'https://source.test/api', method: 'GET', resourceType: 'fetch' }] } }, controlAfter: { ariaState: { expanded: 'true' }, className: 'open', dataState: 'open' } } }] }] },
+    cloneControlAudit: { runId: cloneAuditRunId, routes: [{ route: '/home', observations: [{ route: '/home', index: 0, role: 'button', name: 'Open', controlClass: 'menu', occurrence: 0, actionExecuted: true, effect: { overlayOpened: false, domChanged: true }, evidence: { after: { url: 'https://clone.test/home', overlays: [], domFingerprint: 'clone-dom', network: { count: 0, requests: [] } }, controlAfter: { ariaState: { expanded: 'true' }, className: 'open', dataState: 'open' } } }] }] },
     policy: { controlClasses: { menu: { dimensions: { url: 'ignore', aria: 'gate', structure: 'gate', overlay: 'gate', dom: 'informational', style: 'informational', network: 'ignore' } } } },
   });
   const overlay = report.findings.find((finding) => finding.category === 'control-overlay-mismatch');
@@ -842,8 +906,8 @@ test('control-effect finding cannot close after only static measurement', () => 
 
   const actionReport = withScope(compareMeasurementData({
     ...base,
-    sourceControlAudit: { runId: '20260913T000022Z_audit-controls_22222222', routes: [{ route: '/home', observations: [{ route: '/home', index: 0, actionExecuted: true, evidence: { after: { overlays: [] }, controlAfter: {} } }] }] },
-    cloneControlAudit: { runId: '20260913T000023Z_audit-controls_23232323', routes: [{ route: '/home', observations: [{ route: '/home', index: 0, actionExecuted: true, evidence: { after: { overlays: [] }, controlAfter: {} } }] }] },
+    sourceControlAudit: { runId: '20260913T000022Z_audit-controls_22222222', routes: [{ route: '/home', observations: [{ route: '/home', index: 0, role: 'button', name: 'Open', controlClass: 'menu', occurrence: 0, actionExecuted: true, evidence: { after: { overlays: [] }, controlAfter: {} } }] }] },
+    cloneControlAudit: { runId: '20260913T000023Z_audit-controls_23232323', routes: [{ route: '/home', observations: [{ route: '/home', index: 0, role: 'button', name: 'Open', controlClass: 'menu', occurrence: 0, actionExecuted: true, evidence: { after: { overlays: [] }, controlAfter: {} } }] }] },
   }));
   assert.equal(actionReport.comparatorCoverage.some((entry) => entry.comparator.instrument === 'dead-controls' && entry.comparator.dimension === 'overlay'), true);
   assert.equal(findingCanClose(previous, actionReport), true);

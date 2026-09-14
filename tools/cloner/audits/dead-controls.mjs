@@ -231,8 +231,6 @@ function semanticControlKey(description) {
     description.role ?? 'unknown',
     safeText(description.name),
     description.controlClass ?? 'default',
-    description.href ?? null,
-    description.selector ?? null,
   ]);
 }
 

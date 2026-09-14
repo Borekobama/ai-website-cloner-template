@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { stableFindingId } from './ledger.mjs';
+import { readArtifact } from './run-store.mjs';
 import { startFixtureServer } from './test-app/server.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -68,6 +69,16 @@ async function main() {
         id: 'destructive-fixture-control',
         match: { route: '/home', role: 'button', name: 'Delete account', controlClass: 'destructive' },
         source: 'block',
+        clone: 'block',
+      },
+      {
+        id: 'duplicate-destructive-first-only',
+        match: { route: '/noise', role: 'button', name: 'Duplicate destructive', controlClass: 'destructive', occurrence: 0 },
+        source: 'allow',
+      },
+      {
+        id: 'duplicate-destructive-clone-block',
+        match: { route: '/noise', role: 'button', name: 'Duplicate destructive', controlClass: 'destructive' },
         clone: 'block',
       },
     ],
@@ -151,6 +162,11 @@ async function main() {
     assert.equal(initialCategories.has('motion-samples-mismatch'), false, 'deterministic samples must compare equal');
 
     const cloneObservations = cloneAudit.audits.flatMap((entry) => entry.observations);
+    const sourceObservations = sourceAudit.audits.flatMap((entry) => entry.observations);
+    const sourceDuplicates = sourceObservations.filter((observation) => observation.name === 'Duplicate destructive');
+    assert.deepEqual(sourceDuplicates.map((observation) => [observation.occurrence, observation.category]), [[0, 'dead'], [1, 'blocked-by-policy']]);
+    const cloneDuplicates = cloneObservations.filter((observation) => observation.name === 'Duplicate destructive');
+    assert.deepEqual(cloneDuplicates.map((observation) => [observation.occurrence, observation.category]), [[0, 'blocked-by-policy'], [1, 'blocked-by-policy']]);
     const dead = cloneObservations.find((observation) => observation.name === 'Dead button');
     assert.equal(dead?.category, 'dead');
     const noisyDead = cloneObservations.find((observation) => observation.name === 'Noisy dead button');
@@ -169,14 +185,16 @@ async function main() {
     assert.ok(incompleteCoverage.stylesheetsUnreadable >= 1, 'incomplete CSS route must be recorded as unreadable');
     const homeClasses = cloneClasses.json.audit.routes.find((entry) => entry.route === '/home');
     assert.ok(homeClasses.compiledClasses.includes('readable-runtime'), 'readable runtime class must be compiled');
+    assert.ok(homeClasses.deadClasses.includes('phantom'), 'class text inside declarations must not count as compiled selector');
     assert.equal(homeClasses.deadClasses.includes('readable-runtime'), false, 'readable runtime class must not be dead');
     assert.equal(cloneClasses.json.audit.routes.find((entry) => entry.route === '/incomplete-css').cssCoverageComplete, false);
     assert.equal(cloneClasses.json.audit.findings.some((finding) => finding.subject?.route === '/incomplete-css'), false, 'incomplete CSS must not create authoritative dead-class findings');
     const noiseRoute = cloneMeasurement.coverage.measurement.routesCompleted;
     assert.ok(noiseRoute === ROUTES.length, 'noisy timer route must complete measurement');
 
+    const clonePort = clone.port;
     await clone.close();
-    clone = await startFixtureServer({ mode: 'clone', repaired: true });
+    clone = await startFixtureServer({ mode: 'clone', repaired: true, port: clonePort });
     const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
     assert.equal(repairedMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
     const repairedAudit = await audit(parityRoot, policyPath, 'clone', repairedMeasurement.runId);
@@ -221,6 +239,12 @@ async function main() {
     assert.equal(assetCloneMeasurement.code, 0, assetCloneMeasurement.stderr);
     assert.equal(assetSourceMeasurement.json.coverage.measurement.assetCoverageComplete, true);
     assert.equal(assetCloneMeasurement.json.coverage.measurement.assetCoverageComplete, true);
+    const assetIndex = JSON.parse(readArtifact(parityRoot, SITE, assetCloneMeasurement.json.runId, 'measurements/assets.json').toString('utf8'));
+    const assetRoute = assetIndex.routes.find((entry) => entry.route === '/assets');
+    const assetObservation = JSON.parse(readArtifact(parityRoot, SITE, assetCloneMeasurement.json.runId, assetRoute.artifactPath).toString('utf8'));
+    const repeatedImageReferences = assetObservation.references.filter((reference) => reference.attribute === 'src');
+    assert.equal(repeatedImageReferences.length, 2, 'repeated images must retain separate DOM associations');
+    assert.notEqual(repeatedImageReferences[0].locator, repeatedImageReferences[1].locator, 'repeated image locators must remain unique');
     const assetDiff = await runCli(parityRoot, [
       'diff', '--source', assetSourceMeasurement.json.runId, '--clone', assetCloneMeasurement.json.runId,
       ...commonArgs(parityRoot, policyPath),

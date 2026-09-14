@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { redactForPersistence } from './redact.mjs';
-import { canonicalJson, CONCRETE_RUN_ID, parityRoot, sha256 } from './run-store.mjs';
+import { canonicalJson, CONCRETE_RUN_ID, parityRoot, readManifest, sha256 } from './run-store.mjs';
 
 function assertEvidenceRunId(value) {
   if (value !== null && value !== undefined && !CONCRETE_RUN_ID.test(value)) {
@@ -199,6 +199,12 @@ export function recordReportFindings(root, siteKey, events) {
 
 export function recordFindingStatus(root, siteKey, findingId, status, runId) {
   if (!['verified', 'closed'].includes(status)) throw new Error(`Unsupported finding status: ${status}`);
+  if (!CONCRETE_RUN_ID.test(runId)) throw new Error(`Ledger evidence must cite a concrete run ID: ${runId}`);
+  const manifest = readManifest(root, siteKey, runId);
+  if (manifest.status !== 'closed') throw new Error(`Ledger evidence run must be closed: ${runId}`);
+  const finding = summarizeFindings(readLedger(root, siteKey)).find((entry) => entry.findingId === findingId);
+  if (!finding) throw new Error(`Finding does not exist: ${findingId}`);
+  if (finding.status === 'closed') throw new Error(`Finding is already closed: ${findingId}`);
   return appendLedgerEvent(root, siteKey, { type: `finding.${status}`, findingId, runId });
 }
 
