@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { chromium } from 'playwright';
+import { launchBrowser, launchPersistentContext } from './browser.mjs';
 import { auditDeadControls } from './audits/dead-controls.mjs';
 import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { compareRuns, findingCanClose, findingEventsFromReport } from './diff.mjs';
@@ -368,9 +368,9 @@ async function commandAudit(options, auditName) {
   try {
     if (target === 'source' && !options.profile) throw new Error('Source control audits require --profile and a policy-reviewed persistent context');
     context = options.profile
-      ? await chromium.launchPersistentContext(String(options.profile), { headless: true })
+      ? await launchPersistentContext(String(options.profile), { headless: true })
       : await (async () => {
-        const browser = await chromium.launch({ headless: true });
+        const browser = await launchBrowser({ headless: true });
         const newContext = await browser.newContext();
         newContext.__clonerBrowser = browser;
         return newContext;
