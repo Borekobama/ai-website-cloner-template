@@ -8,9 +8,8 @@ const COMMON_CSS = `
   .readable-runtime { color: seagreen; }
   .toggle-on { background: lightgreen; }
   .motion-toggle { transition: transform 120ms ease; }
+  .motion-toggle { transform: rotate(0deg); }
   .motion-toggle[data-state="open"] { transform: rotate(90deg); }
-  .motion-v4 { transform: none; rotate: 0deg; }
-  .motion-v4[data-state="open"] { transform: none; rotate: 90deg; }
   @keyframes fixture-pulse { from { opacity: 0.6; } to { opacity: 1; } }
   .motion-sampled { animation: fixture-pulse 1s infinite; }
   .motion-defect { transition-property: opacity; }
@@ -70,7 +69,7 @@ function pageDocument({ route, mode, repaired, port }) {
       <p class="readable-runtime">Readable stylesheet runtime class.</p>
       <div class="toolbar">
         ${moreControls}
-        <button class="fixture-control motion-toggle motion-sampled${isClone ? ' motion-v4' : ''}${cloneNeedsRepair ? ' motion-defect' : ''}" data-control-class="toggle" data-action="toggle" data-state="closed" aria-label="Toggle" aria-pressed="false">Toggle</button>
+        <button class="fixture-control motion-toggle motion-sampled${cloneNeedsRepair ? ' motion-defect' : ''}" data-control-class="toggle" data-action="toggle" data-state="closed" aria-label="Toggle" aria-pressed="false">Toggle</button>
         <button class="fixture-control" data-control-class="dead" aria-label="Dead button">Dead button</button>
         <button class="fixture-control" data-control-class="overlay-trigger" data-action="overlay" aria-label="Open overlay">Open overlay</button>
         <button class="fixture-control" data-control-class="dom-trigger" data-action="dom" aria-label="Add item">Add item</button>
@@ -91,9 +90,7 @@ function pageDocument({ route, mode, repaired, port }) {
   ` : `
     <main class="page-shell"><h1>Destination</h1><p>Navigation reached its destination.</p></main>
   `;
-  const extraHead = route === '/incomplete-css'
-    ? `<link rel="stylesheet" href="http://localhost:${port}/fixture-incomplete.css">`
-    : '';
+  const extraHead = `${route === '/incomplete-css' ? `<link rel="stylesheet" href="http://localhost:${port}/fixture-incomplete.css">` : ''}${isClone ? '<style>.motion-toggle { transform: none; rotate: 0deg; } .motion-toggle[data-state="open"] { transform: none; rotate: 90deg; }</style>' : ''}`;
   const hydrationAttribute = route === '/unverified-hydration'
     ? ''
     : ` data-hydrated="${route === '/broken-hydration' ? 'false' : 'true'}"`;
