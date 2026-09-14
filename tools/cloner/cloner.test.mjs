@@ -7,6 +7,7 @@ import { PNG } from 'pngjs';
 import { classNamesFromCss, auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { classifyControl, compareEffectSignatures } from './audits/dead-controls.mjs';
 import { compareMeasurementData, findingCanClose, selectControlAudit } from './diff.mjs';
+import { assertResumeCompatibility } from './measure.mjs';
 import { compareMotionObservations } from './motion.mjs';
 import { appendLedgerEvent, auditFindingCanClose, readLedger, stableFindingId, summarizeFindings } from './ledger.mjs';
 import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
@@ -380,6 +381,42 @@ test('run store is immutable after close or failure and refs resolve to concrete
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('resume accepts redacted origins and rejects changed repository identity', () => {
+  const manifest = {
+    runId: '20260914T000009Z_clone_99999999',
+    status: 'failed',
+    kind: 'clone',
+    engine: { version: '0.11.0' },
+    target: {
+      kind: 'clone',
+      origin: 'http://127.0.0.1:3000/',
+      profileId: null,
+      tenant: null,
+      role: null,
+      modules: { visual: false, motion: false, motionSample: false, domSnapshot: false, responsive: false, assets: false },
+      hydrationSelector: null,
+    },
+    policySha256: null,
+    repository: { commit: 'abc', dirty: false, diffSha256: null },
+  };
+  const compatible = {
+    target: 'clone',
+    origin: 'http://127.0.0.1:3000',
+    profileId: null,
+    tenant: null,
+    role: null,
+    policyHash: null,
+    modules: manifest.target.modules,
+    viewport: null,
+    deviceScaleFactor: null,
+    visualConfigSha256: null,
+    hydrationSelector: null,
+    repository: manifest.repository,
+  };
+  assert.doesNotThrow(() => assertResumeCompatibility(manifest, compatible));
+  assert.throws(() => assertResumeCompatibility(manifest, { ...compatible, repository: { ...manifest.repository, commit: 'def' } }), /repository identity/);
 });
 
 test('coverage cannot close without inventory provenance', () => {

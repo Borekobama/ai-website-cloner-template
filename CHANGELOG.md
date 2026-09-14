@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-14
+
+### Added
+- Compatible `--resume-run` support for reusing completed route evidence from failed measurements
+- Resume provenance, reused-route coverage, module compatibility checks, and browser-backed partial-run recovery coverage
+
 ## [0.10.0] - 2026-09-14
 
 ### Added
@@ -129,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT license
 - README with badges, demo section, quick start, and star history
 
-[Unreleased]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.7.0...v0.8.0

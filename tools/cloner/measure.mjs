@@ -5,11 +5,14 @@ import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import {
   closeRun,
+  canonicalJson,
   createRun,
   createRunId,
+  ENGINE_VERSION,
   failRun,
   readArtifact,
   readManifest,
+  repositoryIdentity,
   setRef,
   sha256,
   updateRun,
@@ -332,6 +335,103 @@ function routeArtifactKey(route, index) {
   return `${String(index + 1).padStart(4, '0')}-${sha256(route).slice(0, 12)}`;
 }
 
+function routeVisualKey(route) {
+  return route.replace(/[^a-z0-9]+/giu, '-').replace(/^-|-$/gu, '') || 'root';
+}
+
+function measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets }) {
+  return { visual: Boolean(normalizedVisualConfig), motion: Boolean(motion), motionSample: Boolean(motionSample), domSnapshot: Boolean(domSnapshot), responsive: Boolean(responsive), assets: Boolean(assets) };
+}
+
+export function assertResumeCompatibility(manifest, { target, origin, profileId, tenant, role, policyHash, modules, viewport, deviceScaleFactor, visualConfigSha256, hydrationSelector, repository }) {
+  if (manifest.status !== 'failed') throw new Error(`Resume source must be a failed run: ${manifest.runId}`);
+  if (manifest.kind !== target || manifest.target?.kind !== target) throw new Error(`Resume run target does not match ${target}: ${manifest.runId}`);
+  if (manifest.engine?.version !== ENGINE_VERSION) throw new Error(`Resume run engine version does not match ${ENGINE_VERSION}: ${manifest.runId}`);
+  let persistedOrigin;
+  try {
+    persistedOrigin = new URL(manifest.target?.origin).origin;
+  } catch {
+    persistedOrigin = null;
+  }
+  if (persistedOrigin !== origin) throw new Error(`Resume run origin does not match ${origin}: ${manifest.runId}`);
+  if ((manifest.target?.profileId ?? null) !== (profileId ?? null)) throw new Error(`Resume run profile does not match: ${manifest.runId}`);
+  if (target === 'source' && (profileId === undefined || profileId === null)) throw new Error(`Source resume requires --profile-id: ${manifest.runId}`);
+  if ((manifest.target?.tenant ?? null) !== (tenant ?? null) || (manifest.target?.role ?? null) !== (role ?? null)) throw new Error(`Resume run identity context does not match: ${manifest.runId}`);
+  if ((manifest.policySha256 ?? null) !== (policyHash ?? null)) throw new Error(`Resume run policy does not match: ${manifest.runId}`);
+  if (JSON.stringify(manifest.target?.modules ?? null) !== JSON.stringify(modules)) throw new Error(`Resume run measurement modules do not match: ${manifest.runId}`);
+  if (JSON.stringify(manifest.target?.viewport ?? null) !== JSON.stringify(viewport ?? null)) throw new Error(`Resume run viewport does not match: ${manifest.runId}`);
+  if ((manifest.target?.deviceScaleFactor ?? null) !== (deviceScaleFactor ?? null)) throw new Error(`Resume run device scale factor does not match: ${manifest.runId}`);
+  if ((manifest.target?.visualConfigSha256 ?? null) !== (visualConfigSha256 ?? null)) throw new Error(`Resume run visual configuration does not match: ${manifest.runId}`);
+  if ((manifest.target?.hydrationSelector ?? null) !== (hydrationSelector ?? null)) throw new Error(`Resume run hydration selector does not match: ${manifest.runId}`);
+  if (canonicalJson(manifest.repository ?? null) !== canonicalJson(repository ?? null)) throw new Error(`Resume run repository identity does not match: ${manifest.runId}`);
+}
+
+function readOptionalRouteJson(root, siteKey, manifest, path) {
+  if (!manifest.artifacts.some((artifact) => artifact.path === path)) return null;
+  return JSON.parse(readArtifact(root, siteKey, manifest.runId, path).toString('utf8'));
+}
+
+function loadReusableRouteEvidence(root, siteKey, manifest, requestedRoutes, { modules, visualRoutes = new Set() } = {}) {
+  const entries = [];
+  for (const artifact of manifest.artifacts ?? []) {
+    if (!artifact.path.startsWith('measurements/routes/') || !artifact.path.endsWith('.json')) continue;
+    try {
+      const routeRecord = JSON.parse(readArtifact(root, siteKey, manifest.runId, artifact.path).toString('utf8'));
+      if (!requestedRoutes.includes(routeRecord.route)) continue;
+      const oldKey = artifact.path.split('/').at(-1).replace(/\.json$/u, '');
+      const required = ['controls', 'classes', 'requests'].map((kind) => `measurements/${kind}/${oldKey}.json`);
+      if (!required.every((path) => manifest.artifacts.some((candidate) => candidate.path === path))) continue;
+      const optional = [
+        modules?.motion ? `measurements/motion/${oldKey}.json` : null,
+        modules?.domSnapshot ? `measurements/dom-snapshots/${oldKey}.json` : null,
+        modules?.responsive ? `measurements/responsive/${oldKey}.json` : null,
+        modules?.assets ? `measurements/assets/${oldKey}.json` : null,
+        modules?.visual && visualRoutes.has(routeRecord.route) ? `measurements/visual-regions/${oldKey}.json` : null,
+      ].filter(Boolean);
+      if (!optional.every((path) => manifest.artifacts.some((candidate) => candidate.path === path))) continue;
+      for (const path of [...required, ...optional]) JSON.parse(readArtifact(root, siteKey, manifest.runId, path).toString('utf8'));
+      const visualPath = optional.find((path) => path.startsWith('measurements/visual-regions/'));
+      if (visualPath) {
+        const visual = JSON.parse(readArtifact(root, siteKey, manifest.runId, visualPath).toString('utf8'));
+        for (const region of visual.regions ?? []) {
+          if (region.artifactPath) readArtifact(root, siteKey, manifest.runId, region.artifactPath);
+        }
+      }
+      entries.push({ route: routeRecord.route, oldKey, routeRecord, required, optional });
+    } catch {
+      // Invalid partial evidence is measured again.
+    }
+  }
+  return new Map(entries.map((entry) => [entry.route, entry]));
+}
+
+function copyReusableRoute(root, siteKey, sourceManifest, targetRunId, entry, newKey, modules) {
+  const paths = [entry.routeRecord, ...entry.required].map((value) => typeof value === 'string' ? value : `measurements/routes/${entry.oldKey}.json`);
+  for (const moduleName of ['visual', 'motion', 'dom-snapshots', 'responsive', 'assets']) {
+    if (moduleName === 'visual' ? !modules.visual : moduleName === 'motion' ? !modules.motion : moduleName === 'dom-snapshots' ? !modules.domSnapshot : !modules[moduleName]) continue;
+    paths.push(`measurements/${moduleName === 'dom-snapshots' ? 'dom-snapshots' : moduleName === 'visual' ? 'visual-regions' : moduleName}/${entry.oldKey}.json`);
+  }
+  const visualPrefix = `measurements/visual-regions/${routeVisualKey(entry.route)}/`;
+  for (const artifact of sourceManifest.artifacts ?? []) if (artifact.path.startsWith(visualPrefix)) paths.push(artifact.path);
+  for (const sourcePath of [...new Set(paths)]) {
+    if (!sourceManifest.artifacts.some((artifact) => artifact.path === sourcePath)) continue;
+    const targetPath = sourcePath.includes(`/${entry.oldKey}.json`) ? sourcePath.replace(`/${entry.oldKey}.json`, `/${newKey}.json`) : sourcePath;
+    const record = sourceManifest.artifacts.find((artifact) => artifact.path === sourcePath);
+    writeArtifact(root, siteKey, targetRunId, targetPath, readArtifact(root, siteKey, sourceManifest.runId, sourcePath), { kind: record.kind, visibility: record.visibility });
+  }
+  return {
+    routeRecord: entry.routeRecord,
+    controls: JSON.parse(readArtifact(root, siteKey, sourceManifest.runId, entry.required[0]).toString('utf8')),
+    classes: JSON.parse(readArtifact(root, siteKey, sourceManifest.runId, entry.required[1]).toString('utf8')),
+    requests: JSON.parse(readArtifact(root, siteKey, sourceManifest.runId, entry.required[2]).toString('utf8')),
+    visual: modules.visual ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/visual-regions/${entry.oldKey}.json`) : null,
+    motion: modules.motion ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/motion/${entry.oldKey}.json`) : null,
+    domSnapshot: modules.domSnapshot ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/dom-snapshots/${entry.oldKey}.json`) : null,
+    responsive: modules.responsive ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/responsive/${entry.oldKey}.json`) : null,
+    assets: modules.assets ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/assets/${entry.oldKey}.json`) : null,
+  };
+}
+
 function identityFailure(identity) {
   if (!identity) return null;
   if (identity.tenantStatus === 'unverified') return 'tenant identity could not be verified from an explicit marker';
@@ -369,6 +469,7 @@ export async function measureTarget({
   domSnapshot = false,
   responsive = false,
   assets = false,
+  resumeRunId = null,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -377,13 +478,36 @@ export async function measureTarget({
   if (!['source', 'clone'].includes(target)) throw new Error(`target must be source or clone, received ${target}`);
   if (authoritativeInventory && inventoryRunId) throw new Error('authoritativeInventory cannot be combined with inventoryRunId');
   const normalizedVisualConfig = visualConfig ? normalizeVisualRegionConfig(visualConfig) : null;
+  const modules = measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets });
   const visualConfigSha256 = normalizedVisualConfig ? visualRegionConfigHash(normalizedVisualConfig) : null;
   const visualViewports = normalizedVisualConfig
     ? [...new Map(normalizedVisualConfig.regions.map((region) => [JSON.stringify(region.viewport), region.viewport])).values()]
     : [];
+  const measurementViewport = normalizedVisualConfig ? visualViewports[0] : browserOptions.viewport ?? null;
+  const measurementDeviceScaleFactor = normalizedVisualConfig
+    ? visualViewports[0].deviceScaleFactor
+    : browserOptions.deviceScaleFactor ?? null;
   if (visualViewports.length > 1) throw new Error('A visual measurement run supports one viewport; create separate runs for other viewports');
   const requestedRoutes = routes.length ? routes : [base.pathname || '/'];
   const runId = createRunId(target);
+  const resumeManifest = resumeRunId ? readManifest(root, siteKey, resumeRunId) : null;
+  if (resumeManifest) {
+    assertResumeCompatibility(resumeManifest, {
+      target,
+      origin: base.origin,
+      profileId,
+      tenant,
+      role,
+      policyHash: policySha256(policy),
+      modules,
+      viewport: measurementViewport,
+      deviceScaleFactor: measurementDeviceScaleFactor,
+      visualConfigSha256,
+      hydrationSelector,
+      repository: repositoryIdentity(root),
+    });
+    if (server === 'managed') throw new Error('Managed clone server cannot resume prior browser evidence');
+  }
   const inventoryContext = inventoryRunId
     ? readInventoryContext(root, siteKey, inventoryRunId, target, requestedRoutes)
     : null;
@@ -393,13 +517,14 @@ export async function measureTarget({
     routesRequested: requestedRoutes,
     routesCompleted: [],
     routesFailed: [],
+    ...(resumeManifest ? { resumeRunId: resumeManifest.runId, routesReused: [] } : {}),
   };
   createRun({
     root,
     siteKey,
     runId,
     kind: target,
-    target: { kind: target, origin: base.origin, profileId, tenant, role, ...(visualConfigSha256 ? { visualConfigSha256 } : {}) },
+    target: { kind: target, origin: base.origin, profileId, tenant, role, modules, hydrationSelector: hydrationSelector ?? null, ...(measurementViewport ? { viewport: measurementViewport } : {}), ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}), ...(visualConfigSha256 ? { visualConfigSha256 } : {}) },
     scope,
     policySha256: policySha256(policy),
   });
@@ -412,7 +537,7 @@ export async function measureTarget({
     if (target === 'clone' && server === 'managed') {
       managedServer = await startManagedCloneServer({ root });
       baseUrl = managedServer.url;
-      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, profileId, tenant, role, ...(visualConfigSha256 ? { visualConfigSha256 } : {}) } });
+      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, profileId, tenant, role, modules, hydrationSelector: hydrationSelector ?? null, ...(measurementViewport ? { viewport: measurementViewport } : {}), ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}), ...(visualConfigSha256 ? { visualConfigSha256 } : {}) } });
     }
     if (target === 'source' && !profileDir) {
       throw preconditionError('Source measurement requires a persistent browser profile', runId);
@@ -439,11 +564,35 @@ export async function measureTarget({
     const domSnapshotObservations = [];
     const responsiveObservations = [];
     const assetObservations = [];
+    const reusableRoutes = resumeManifest ? loadReusableRouteEvidence(root, siteKey, resumeManifest, requestedRoutes, { modules, visualRoutes: new Set(normalizedVisualConfig?.regions.map((region) => region.route) ?? []) }) : new Map();
     const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
     for (const [routeIndex, route] of requestedRoutes.entries()) {
+      const artifactKey = routeArtifactKey(route, routeIndex);
+      const reusable = reusableRoutes.get(route);
+      if (reusable) {
+        const restored = copyReusableRoute(root, siteKey, resumeManifest, runId, reusable, artifactKey, modules);
+        routeRecords.push({ ...restored.routeRecord });
+        controls.push(...(restored.controls.observations ?? []));
+        classObservations.push(restored.classes);
+        requestsByRoute.push(restored.requests);
+        if (restored.visual) visualObservations.push(restored.visual);
+        if (restored.motion) motionObservations.push(restored.motion);
+        if (restored.domSnapshot) domSnapshotObservations.push({
+          route: restored.domSnapshot.route,
+          url: restored.domSnapshot.url,
+          summary: restored.domSnapshot.summary,
+          fingerprint: restored.domSnapshot.fingerprint,
+          artifactPath: `measurements/dom-snapshots/${artifactKey}.json`,
+        });
+        if (restored.responsive) responsiveObservations.push({ observation: restored.responsive, artifactPath: `measurements/responsive/${artifactKey}.json` });
+        if (restored.assets) assetObservations.push({ observation: restored.assets, artifactPath: `measurements/assets/${artifactKey}.json` });
+        scope.routesCompleted.push(route);
+        scope.routesReused.push(route);
+        updateRun(root, siteKey, runId, { scope: { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed], routesReused: [...scope.routesReused] } });
+        continue;
+      }
       const tracker = createRequestTracker(page);
       const assetTracker = assets ? createAssetTracker(page) : null;
-      const artifactKey = routeArtifactKey(route, routeIndex);
       try {
         let response;
         try {
@@ -723,6 +872,7 @@ export async function measureTarget({
         } : {}),
       },
       scope: inventoryScope,
+      ...(resumeManifest ? { resume: { runId: resumeManifest.runId, routesReused: [...scope.routesReused] } } : {}),
     };
     writeArtifact(root, siteKey, runId, 'coverage.json', coverage, { kind: 'coverage' });
     const closed = closeRun(root, siteKey, runId, { runtime: { serverHealthy: true, hydrated: target === 'clone' ? routeRecords.every((entry) => entry.health.hydrated) : null, authenticated: target === 'source' } });

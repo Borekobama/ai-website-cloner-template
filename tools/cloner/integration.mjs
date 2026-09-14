@@ -229,6 +229,20 @@ async function main() {
     assert.equal(assetDiff.json.assetCoverage.complete, true);
     assert.deepEqual(assetDiff.json.findings, [], 'matching asset fixture should produce no asset findings');
 
+    const partial = await runCli(parityRoot, [
+      'measure', '--target', 'clone', '--url', clone.url, '--routes', '/home,/missing',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.notEqual(partial.code, 0, 'partial run must fail on missing route');
+    const partialRun = /failed run: (\d{8}T\d{6}Z_clone_[a-f0-9]{8})/u.exec(partial.stderr)?.[1];
+    assert.match(partialRun ?? '', /^\d{8}T\d{6}Z_clone_[a-f0-9]{8}$/);
+    const resumed = await runCli(parityRoot, [
+      'measure', '--target', 'clone', '--url', clone.url, '--routes', '/home', '--resume-run', partialRun,
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(resumed.code, 0, resumed.stderr);
+    assert.deepEqual(resumed.json.coverage.resume.routesReused, ['/home']);
+
     const findings = await runCli(parityRoot, ['findings', ...commonArgs(parityRoot, policyPath)]);
     assert.equal(findings.code, 0, findings.stderr);
     assert.ok(findings.json.findings.length > 0, 'initial diff must have appended findings');
