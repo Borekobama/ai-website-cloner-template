@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.10.0
+# Cloner parity CLI v0.11.0
 
-The cloner CLI is the repository-owned v0.10.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.11.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -100,6 +100,17 @@ artifacts stay private. `measurements/assets.json` contains only metadata and
 artifact references. Asset hash differences are informational, not universal
 completion gates. Unreadable stylesheets or response bodies make asset coverage
 incomplete without failing ordinary route measurement.
+
+Resume compatible completed routes after a failed measurement:
+
+```bash
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --resume-run "$FAILED_RUN"
+```
+
+Resume accepts only failed runs with matching target origin, identity context,
+policy, engine version, and measurement modules. Reused route artifacts remain
+immutable copies in new run. Routes without valid complete evidence run again.
+Use `--inventory` when resumed run must become authoritative.
 
 Source interactions are blocked unless `parity-exceptions.json` contains an
 explicit matching allowance. Blocked controls are still inventoried, but are

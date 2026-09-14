@@ -32,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.10.0
+AI Website Cloner parity CLI v0.11.0
 
 Usage:
   npm run cloner -- <command> [options]
@@ -63,6 +63,7 @@ Measure options:
   --profile-id <id>              Non-secret profile label for the manifest
   --inventory-run <run-id|current>  Existing immutable inventory for a subset measurement
   --inventory                     Declare this requested route set as the authoritative inventory
+  --resume-run <run-id>           Reuse compatible completed route evidence from a failed run
   --server existing|managed      Clone server mode (default: existing)
   --hydration-selector <css>     Optional explicit clone hydration marker
   --visual-regions <path>        Versioned region-scoped visual measurement config
@@ -299,6 +300,7 @@ async function commandMeasure(options) {
     server: options.server ?? 'existing',
     inventoryRunId,
     authoritativeInventory: Boolean(options.inventory),
+    resumeRunId: options['resume-run'] ? String(options['resume-run']) : null,
     visualConfig,
     motion: Boolean(options.motion || options['motion-sample']),
     motionSample: Boolean(options['motion-sample']),
