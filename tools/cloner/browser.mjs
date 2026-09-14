@@ -7,20 +7,27 @@ const chromeOptions = (options) => {
   return fallback;
 };
 
-export async function launchBrowser(options = {}) {
+async function launchWithFallback(primary, fallback, options) {
   try {
-    return await chromium.launch(options);
+    return await primary(options);
   } catch (error) {
     if (!icuFailure(error)) throw error;
-    return chromium.launch(chromeOptions(options));
+    return fallback(chromeOptions(options));
   }
 }
 
-export async function launchPersistentContext(profile, options = {}) {
-  try {
-    return await chromium.launchPersistentContext(profile, options);
-  } catch (error) {
-    if (!icuFailure(error)) throw error;
-    return chromium.launchPersistentContext(profile, chromeOptions(options));
-  }
+export function launchBrowser(options = {}, runtime = chromium) {
+  return launchWithFallback(
+    (launchOptions) => runtime.launch(launchOptions),
+    (launchOptions) => runtime.launch(launchOptions),
+    options,
+  );
+}
+
+export function launchPersistentContext(profile, options = {}, runtime = chromium) {
+  return launchWithFallback(
+    (launchOptions) => runtime.launchPersistentContext(profile, launchOptions),
+    (launchOptions) => runtime.launchPersistentContext(profile, launchOptions),
+    options,
+  );
 }
