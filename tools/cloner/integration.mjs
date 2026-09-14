@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { stableFindingId } from './ledger.mjs';
+import { findingEventsFromReport } from './diff.mjs';
 import { readArtifact } from './run-store.mjs';
 import { startFixtureServer } from './test-app/server.mjs';
 
@@ -149,12 +149,7 @@ async function main() {
     assert.equal(initialDiff.code, 0, initialDiff.stderr);
     assert.equal(initialDiff.json.domSnapshotCoverage.complete, true);
     const initialCategories = new Set(initialDiff.json.findings.map((finding) => finding.category));
-    const initialFindingIds = new Set(initialDiff.json.findings.map((finding) => stableFindingId({
-      ...finding,
-      domain: 'parity',
-      target: 'comparison',
-      comparison: { sourceKind: 'source', cloneKind: 'clone' },
-    })));
+    const initialFindingIds = new Set(findingEventsFromReport(initialDiff.json).map((event) => event.findingId));
     for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class', 'visual-region-mismatch', 'motion-declared-mismatch']) {
       assert.ok(initialCategories.has(category), `expected initial finding ${category}`);
     }
