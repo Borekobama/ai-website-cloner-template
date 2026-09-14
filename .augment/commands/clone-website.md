@@ -280,7 +280,9 @@ Declared motion/state mismatches are parity gates. Samples remain informational.
 
 Pass `--dom-snapshot` when complete Chromium DOM/layout evidence is needed.
 DOMSnapshot artifacts are private, per-route, redacted before persistence, and
-not global completion gates.
+not global completion gates. Their bounded structural summaries compare tag,
+role, repeated-component, and layout counts. Structural mismatches are parity
+findings; geometry mismatches remain informational.
 
 Visual regions are explicit evidence modules. Compare only configured regions;
 never use a whole-page pixel score. Keep screenshot evidence private by default.

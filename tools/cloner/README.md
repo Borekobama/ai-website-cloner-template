@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.11.0
+# Cloner parity CLI v0.12.0
 
-The cloner CLI is the repository-owned v0.11.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.12.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -55,8 +55,9 @@ npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site exam
 ```
 
 DOMSnapshot artifacts include flattened DOM, layout, paint order, selected
-computed styles, redacted content, and per-route fingerprints. They stay private
-by default and provide source evidence for builders and later fidelity modules.
+computed styles, redacted content, bounded structural summaries, and per-route
+fingerprints. Structural mismatches are parity findings. Geometry mismatches
+are informational. Evidence stays private by default.
 
 Discover responsive CSS behavior with an explicit responsive measurement on
 both sides:

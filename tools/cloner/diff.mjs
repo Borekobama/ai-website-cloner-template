@@ -2,7 +2,7 @@ import { CONCRETE_RUN_ID, canonicalJson, listRuns, readArtifact, readManifest } 
 import { comparatorForDimension, dimensionsForControl, policySha256 } from './policy.mjs';
 import { stableFindingId } from './ledger.mjs';
 import { compareMotionObservations } from './motion.mjs';
-import { domSnapshotCoverage } from './dom-snapshot.mjs';
+import { compareDomSnapshotStructure, domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareVisualRegionImages, visualRoutePath } from './visual-regions.mjs';
 import { compareResponsiveEvidence, hydrateResponsiveEvidence } from './responsive.mjs';
 import { compareAssetEvidence, hydrateAssetEvidence } from './assets.mjs';
@@ -356,14 +356,16 @@ export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceContro
     expectedRoutes: comparisonRoutes,
     complete: Boolean(sourceDomCoverage.complete && cloneDomCoverage.complete && sourceDomCoverage.routesMatch && cloneDomCoverage.routesMatch),
   };
-  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings, ...motionComparison.findings, ...responsiveComparison.findings, ...assetComparison.findings];
+  const structureComparison = compareDomSnapshotStructure(sourceDomSnapshot, cloneDomSnapshot, sourceRunId, cloneRunId);
+  domSnapshotComparison.structure = structureComparison.coverage;
+  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings, ...motionComparison.findings, ...responsiveComparison.findings, ...assetComparison.findings, ...structureComparison.findings];
   return {
     schemaVersion: 1,
     semantics: FINDING_SEMANTICS,
     sourceRunId,
     cloneRunId,
     supportedKinds: [...SUPPORTED_KINDS],
-    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage, ...motionComparison.comparatorCoverage, ...responsiveComparison.comparatorCoverage, ...assetComparison.comparatorCoverage],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage, ...motionComparison.comparatorCoverage, ...responsiveComparison.comparatorCoverage, ...assetComparison.comparatorCoverage, ...structureComparison.comparatorCoverage],
     findings,
     visualCoverage: visualComparison.coverage,
     motionCoverage: motionComparison.coverage,
@@ -507,6 +509,8 @@ function inferFindingComparator(finding) {
   if (category.startsWith('motion-')) return comparator('motion', 'motion', category.replace(/^motion-(?:source|clone)-|^motion-/u, '').replace(/-mismatch$/u, ''), finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category.startsWith('responsive-')) return comparator('responsive', finding?.comparator?.evidenceClass ?? 'responsive', finding?.policy?.dimension ?? finding?.comparator?.dimension ?? null, finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category.startsWith('asset-')) return comparator('assets', finding?.comparator?.evidenceClass ?? 'asset', finding?.policy?.dimension ?? finding?.comparator?.dimension ?? null, finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
+  if (category === 'dom-structure-mismatch') return comparator('dom-snapshot', 'dom-structure', 'structure', 'gate');
+  if (category === 'dom-geometry-mismatch') return comparator('dom-snapshot', 'dom-geometry', 'geometry', 'informational');
   return null;
 }
 
