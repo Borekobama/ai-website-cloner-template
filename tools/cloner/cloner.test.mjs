@@ -300,6 +300,19 @@ test('policy validation is strict and the most specific safe-action rule wins', 
   assert.equal(specificBlock.outcome, 'blocked-by-policy');
   assert.equal(specificBlock.policyId, 'billing-block');
 
+  const wildcardBlock = evaluateAction({
+    target: 'source',
+    policy: {
+      actions: [
+        { id: 'broad-star-allow', match: { route: '*', name: '*' }, source: 'allow' },
+        { id: 'alpha-pattern-block', match: { name: 'Alpha*' }, source: 'block' },
+      ],
+    },
+    action: { route: '/home', name: 'Alpha account' },
+  });
+  assert.equal(wildcardBlock.outcome, 'blocked-by-policy');
+  assert.equal(wildcardBlock.policyId, 'alpha-pattern-block');
+
   const conflict = evaluateAction({
     target: 'source',
     policy: {
