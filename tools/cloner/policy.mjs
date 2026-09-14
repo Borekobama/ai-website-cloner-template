@@ -144,20 +144,25 @@ export function policySha256(policy) {
   return createHash('sha256').update(canonicalJson(normalizePolicy(policy))).digest('hex');
 }
 
-function actionSpecificity(action) {
-  const values = Object.values(action.match ?? {});
-  const exactCount = values.reduce((count, value) => {
-    const candidates = Array.isArray(value) ? value : [value];
-    return count + (candidates.every((entry) => typeof entry !== 'string' || !entry.includes('*')) ? 1 : 0);
-  }, 0);
-  const wildcardCount = values.length - exactCount;
-  return (exactCount * 1000) + wildcardCount;
+function matchSpecificity(expected, actual) {
+  const candidates = Array.isArray(expected) ? expected : [expected];
+  return Math.max(0, ...candidates
+    .filter((candidate) => matchValue(candidate, actual))
+    .map((candidate) => {
+      if (typeof candidate !== 'string' || !candidate.includes('*')) return 1000;
+      return candidate.replaceAll('*', '').length;
+    }));
+}
+
+function actionSpecificity(action, candidate) {
+  return Object.entries(action.match ?? {})
+    .reduce((score, [key, expected]) => score + matchSpecificity(expected, candidate[key]), 0);
 }
 
 export function matchingActions(policy, candidate) {
   return normalizePolicy(policy).actions
     .filter((action) => actionMatches(action, candidate))
-    .map((action) => ({ action, specificity: actionSpecificity(action) }))
+    .map((action) => ({ action, specificity: actionSpecificity(action, candidate) }))
     .sort((left, right) => right.specificity - left.specificity);
 }
 
