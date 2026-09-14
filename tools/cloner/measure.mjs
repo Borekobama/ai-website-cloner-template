@@ -19,6 +19,7 @@ import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { redactForPersistence, safeUrl } from './redact.mjs';
 import { normalizePolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
+import { captureVisualRegions, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
 
@@ -358,6 +359,7 @@ export async function measureTarget({
   server = null,
   inventoryRunId = null,
   authoritativeInventory = false,
+  visualConfig = null,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -365,6 +367,12 @@ export async function measureTarget({
   const base = assertTargetUrl(url);
   if (!['source', 'clone'].includes(target)) throw new Error(`target must be source or clone, received ${target}`);
   if (authoritativeInventory && inventoryRunId) throw new Error('authoritativeInventory cannot be combined with inventoryRunId');
+  const normalizedVisualConfig = visualConfig ? normalizeVisualRegionConfig(visualConfig) : null;
+  const visualConfigSha256 = normalizedVisualConfig ? visualRegionConfigHash(normalizedVisualConfig) : null;
+  const visualViewports = normalizedVisualConfig
+    ? [...new Map(normalizedVisualConfig.regions.map((region) => [JSON.stringify(region.viewport), region.viewport])).values()]
+    : [];
+  if (visualViewports.length > 1) throw new Error('A visual measurement run supports one viewport; create separate runs for other viewports');
   const requestedRoutes = routes.length ? routes : [base.pathname || '/'];
   const runId = createRunId(target);
   const inventoryContext = inventoryRunId
@@ -382,11 +390,12 @@ export async function measureTarget({
     siteKey,
     runId,
     kind: target,
-    target: { kind: target, origin: base.origin, profileId, tenant, role },
+    target: { kind: target, origin: base.origin, profileId, tenant, role, ...(visualConfigSha256 ? { visualConfigSha256 } : {}) },
     scope,
     policySha256: policySha256(policy),
   });
   writeArtifact(root, siteKey, runId, 'policy.json', normalizePolicy(policy), { kind: 'policy-snapshot' });
+  if (normalizedVisualConfig) writeArtifact(root, siteKey, runId, 'visual-regions.json', normalizedVisualConfig, { kind: 'visual-region-config' });
   let managedServer = null;
   let context = null;
   try {
@@ -394,18 +403,21 @@ export async function measureTarget({
     if (target === 'clone' && server === 'managed') {
       managedServer = await startManagedCloneServer({ root });
       baseUrl = managedServer.url;
-      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, profileId, tenant, role } });
+      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, profileId, tenant, role, ...(visualConfigSha256 ? { visualConfigSha256 } : {}) } });
     }
     if (target === 'source' && !profileDir) {
       throw preconditionError('Source measurement requires a persistent browser profile', runId);
     }
+    const contextOptions = normalizedVisualConfig
+      ? { ...browserOptions, viewport: { width: visualViewports[0].width, height: visualViewports[0].height }, deviceScaleFactor: visualViewports[0].deviceScaleFactor }
+      : browserOptions;
     if (profileDir) {
       const profilePath = resolve(profileDir);
       mkdirSync(profilePath, { recursive: true, mode: 0o700 });
-      context = await chromium.launchPersistentContext(profilePath, { headless: true, ...browserOptions });
+      context = await chromium.launchPersistentContext(profilePath, { headless: true, ...contextOptions });
     } else {
       const browser = await chromium.launch({ headless: true, ...browserOptions });
-      context = await browser.newContext();
+      context = await browser.newContext(contextOptions);
       context.__clonerBrowser = browser;
     }
     const page = await context.newPage();
@@ -413,6 +425,8 @@ export async function measureTarget({
     const controls = [];
     const classObservations = [];
     const requestsByRoute = [];
+    const visualObservations = [];
+    const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
     for (const [routeIndex, route] of requestedRoutes.entries()) {
       const tracker = createRequestTracker(page);
       const artifactKey = routeArtifactKey(route, routeIndex);
@@ -454,6 +468,9 @@ export async function measureTarget({
         }
         const routeControls = await collectControls(page, route);
         const routeClasses = await collectClasses(page, route);
+        const visual = normalizedVisualConfig
+          ? await captureVisualRegions(page, { config: normalizedVisualConfig, target, route })
+          : null;
         const requestRecord = { route, requests: [...tracker.statuses], failures: [...tracker.failures] };
         const routeRecord = {
           route,
@@ -467,6 +484,21 @@ export async function measureTarget({
         writeArtifact(root, siteKey, runId, `measurements/controls/${artifactKey}.json`, { route, observations: routeControls }, { kind: 'control-observation' });
         writeArtifact(root, siteKey, runId, `measurements/classes/${artifactKey}.json`, routeClasses, { kind: 'runtime-class-observation' });
         writeArtifact(root, siteKey, runId, `measurements/requests/${artifactKey}.json`, requestRecord, { kind: 'request-observation' });
+        if (visual) {
+          const visualRecord = {
+            ...visual,
+            regions: visual.regions.map((region) => {
+              const persistedRegion = { ...region };
+              delete persistedRegion.image;
+              return persistedRegion;
+            }),
+          };
+          for (const region of visual.regions) {
+            if (region.image) writeArtifact(root, siteKey, runId, region.artifactPath, region.image, { kind: 'visual-region-png', visibility: 'private' });
+          }
+          writeArtifact(root, siteKey, runId, `measurements/visual-regions/${artifactKey}.json`, visualRecord, { kind: 'visual-region-observation', visibility: 'private' });
+          visualObservations.push(visualRecord);
+        }
         controls.push(...routeControls);
         classObservations.push(routeClasses);
         requestsByRoute.push(requestRecord);
@@ -533,6 +565,16 @@ export async function measureTarget({
       kind: 'request-observation',
       routes: requestsByRoute,
     }, { kind: 'request-observation' });
+    if (normalizedVisualConfig) {
+      writeArtifact(root, siteKey, runId, 'measurements/visual-regions.json', {
+        schemaVersion: 1,
+        kind: 'visual-region-observation',
+        config: normalizedVisualConfig,
+        configSha256: visualConfigSha256,
+        routes: visualObservations,
+        complete: visualObservations.length === visualRoutes.size && visualObservations.every((entry) => entry.complete),
+      }, { kind: 'visual-region-observation', visibility: 'private' });
+    }
     const inventory = inventoryContext
       ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
       : authoritativeInventory
@@ -553,6 +595,11 @@ export async function measureTarget({
         stylesheetsReadable: classObservations.reduce((sum, entry) => sum + (entry.stylesheetsReadable ?? 0), 0),
         stylesheetsUnreadable: classObservations.reduce((sum, entry) => sum + (entry.stylesheetsUnreadable ?? 0), 0),
         cssCoverageComplete: classObservations.every((entry) => entry.cssCoverageComplete !== false),
+        ...(normalizedVisualConfig ? {
+          visualRegionsConfigured: normalizedVisualConfig.regions.length,
+          visualRoutesCaptured: visualObservations.length,
+          visualCoverageComplete: visualObservations.length === visualRoutes.size && visualObservations.every((entry) => entry.complete),
+        } : {}),
       },
       scope: inventoryScope,
     };

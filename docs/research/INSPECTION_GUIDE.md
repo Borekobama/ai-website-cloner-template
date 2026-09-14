@@ -121,6 +121,7 @@ Before accepting a parity milestone:
 - [ ] Failed runs retain incrementally persisted completed-route evidence and accurately name failed routes
 - [ ] Findings are appended to `docs/research/<site-key>/_parity/ledger.jsonl`
 - [ ] Visual QA is reported as an additional signal, not as permanent completion
+- [ ] Region-scoped visual evidence compares only configured invariant regions and keeps screenshot artifacts private by default
 
 Never use historical prose counts as fixture expectations. Freeze a failing
 instrument result with `fixture freeze` before repairing the instrument.

@@ -15,6 +15,7 @@ import {
 import { measureTarget, runtimeHealth, sourceIdentity } from './measure.mjs';
 import { loadPolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
+import { normalizeVisualRegionConfig } from './visual-regions.mjs';
 import {
   closeRun,
   createRun,
@@ -31,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.5.1
+AI Website Cloner parity CLI v0.6.0
 
 Usage:
   npm run cloner -- <command> [options]
@@ -63,7 +64,8 @@ Measure options:
   --inventory-run <run-id|current>  Existing immutable inventory for a subset measurement
   --inventory                     Declare this requested route set as the authoritative inventory
   --server existing|managed      Clone server mode (default: existing)
-  --hydration-selector <css>    Optional explicit clone hydration marker
+  --hydration-selector <css>     Optional explicit clone hydration marker
+  --visual-regions <path>        Versioned region-scoped visual measurement config
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -246,10 +248,11 @@ function recordCloneHealthAuditFindings({
 
 async function validateSourceAuditPage(page, expected) {
   const observedUrl = new URL(page.url());
-  if (observedUrl.origin !== expected.origin) {
-    return { valid: false, reason: `Source trial origin ${observedUrl.origin} does not match ${expected.origin}` };
+  const expectedOrigin = new URL(expected.origin).origin;
+  if (observedUrl.origin !== expectedOrigin) {
+    return { valid: false, reason: `Source trial origin ${observedUrl.origin} does not match ${expectedOrigin}` };
   }
-  const pathname = normalizedPathname(observedUrl.href, expected.origin);
+  const pathname = normalizedPathname(observedUrl.href, expectedOrigin);
   if (LOGIN_PATH.test(pathname)) return { valid: false, reason: 'Source trial is redirected to an authentication route' };
   if (pathname !== expected.pathname) {
     return { valid: false, reason: `Source trial pathname ${pathname} does not match expected ${expected.pathname}` };
@@ -272,6 +275,7 @@ async function commandMeasure(options) {
   const root = options.root ? String(options.root) : process.cwd();
   const siteKey = options.site ? String(options.site) : siteKeyFromUrl(url);
   const policy = loadPolicy(options.policy, root, siteKey);
+  const visualConfig = options['visual-regions'] ? normalizeVisualRegionConfig(String(options['visual-regions'])) : null;
   const inventoryRunId = options['inventory-run']
     ? resolveRunId(root, siteKey, String(options['inventory-run']), target)
     : null;
@@ -290,6 +294,7 @@ async function commandMeasure(options) {
     server: options.server ?? 'existing',
     inventoryRunId,
     authoritativeInventory: Boolean(options.inventory),
+    visualConfig,
   });
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, coverage: result.coverage });
 }
@@ -448,11 +453,17 @@ function commandDiff(options) {
   const sourceRunId = resolveRunId(root, siteKey, options.source ?? 'current', sourceTarget);
   const cloneRunId = resolveRunId(root, siteKey, options.clone ?? 'current', cloneTarget);
   const policy = loadPolicy(options.policy, root, siteKey);
-  const report = compareRuns({ root, siteKey, sourceRunId, cloneRunId, policy, sourceAuditRunId: options['source-audit'] ?? null, cloneAuditRunId: options['clone-audit'] ?? null });
   const reportRunId = createRunId('diff');
+  const report = compareRuns({ root, siteKey, sourceRunId, cloneRunId, reportRunId, policy, sourceAuditRunId: options['source-audit'] ?? null, cloneAuditRunId: options['clone-audit'] ?? null });
   createRun({ root, siteKey, runId: reportRunId, kind: 'diff', target: { kind: 'comparison', sourceRunId, cloneRunId }, scope: { sourceRunId, cloneRunId, routesRequested: [], routesCompleted: [] }, policySha256: policySha256(policy) });
   writeArtifact(root, siteKey, reportRunId, 'policy.json', policy, { kind: 'policy-snapshot' });
-  writeArtifact(root, siteKey, reportRunId, 'report.json', { ...report, reportRunId }, { kind: 'report' });
+  for (const visualArtifact of report.visualArtifacts ?? []) {
+    writeArtifact(root, siteKey, reportRunId, visualArtifact.path, visualArtifact.image, { kind: 'visual-region-diff-png', visibility: visualArtifact.visibility ?? 'private' });
+  }
+  const visualArtifacts = (report.visualArtifacts ?? []).map(({ path, visibility }) => ({ path, visibility }));
+  const reportData = { ...report, visualArtifacts };
+  delete reportData.visualArtifacts;
+  writeArtifact(root, siteKey, reportRunId, 'report.json', { ...reportData, reportRunId }, { kind: 'report' });
   writeArtifact(root, siteKey, reportRunId, 'coverage.json', { inventory: { source: report.coverage.sourceDetails?.inventory ?? null, clone: report.coverage.cloneDetails?.inventory ?? null }, measurement: { routesRequested: report.coverage.source, routesCompleted: report.coverage.clone }, scope: 'comparison' }, { kind: 'coverage' });
   const closed = closeRun(root, siteKey, reportRunId);
   const previous = new Map(summarizeFindings(readLedger(root, siteKey)).map((finding) => [finding.findingId, finding]));
@@ -478,7 +489,7 @@ function commandDiff(options) {
     currentEvents.push({ type: 'finding.closed', findingId: finding.findingId, runId: reportRunId, sourceRunId, cloneRunId, evidence: { runId: reportRunId, artifact: 'report.json', locator: '#/findings' } });
   }
   recordReportFindings(root, siteKey, currentEvents);
-  jsonOutput({ ...report, reportRunId: closed.runId, reportPath: pathForRunArtifact(root, siteKey, reportRunId, 'report.json') });
+  jsonOutput({ ...reportData, visualArtifacts, reportRunId: closed.runId, reportPath: pathForRunArtifact(root, siteKey, reportRunId, 'report.json') });
 }
 
 function commandFindings(options) {

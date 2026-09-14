@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.5.1
+# Cloner parity CLI v0.6.0
 
-The cloner CLI is the repository-owned v0.5.1 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.6.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -21,6 +21,21 @@ npm run cloner -- findings --site example.test-01234567
 npm run cloner -- fixture freeze --site example.test-01234567 --target clone --run current --name repaired-menu
 npm run test:cloner:integration
 ```
+
+Add region-scoped visual evidence to both measurement runs with a versioned
+configuration:
+
+```bash
+npm run cloner -- measure --target source --url https://example.test --site example.test-01234567 --routes /home --profile .cloner-profiles/primary --inventory --visual-regions docs/research/example.test-01234567/visual-regions.json
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home --inventory --visual-regions docs/research/example.test-01234567/visual-regions.json
+npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN"
+```
+
+Visual configuration uses `schemaVersion: 1` and explicit route, viewport,
+region id, selector, classification, mode, and pixel threshold fields. Only
+configured regions are compared. Screenshots and diff PNGs stay private run
+artifacts by default. Start from `tools/cloner/visual-regions.example.json`.
+No whole-page visual score exists.
 
 Source interactions are blocked unless `parity-exceptions.json` contains an
 explicit matching allowance. Blocked controls are still inventoried, but are
@@ -62,9 +77,9 @@ when deliberately promoting reviewed, redacted evidence into tracked
 
 Measurements are intentionally small and explicit. The supported parity spine
 is route inventory, control inventory, route-scoped runtime/compiled classes,
-coverage, two audits, policy-aware comparison, and an append-only JSONL
-findings ledger. Optional fidelity evidence modules, such as motion analysis,
-screenshot comparisons, or DOM snapshots, require immutable evidence, coverage,
+coverage, two audits, region-scoped visual evidence, policy-aware comparison,
+and an append-only JSONL findings ledger. Optional fidelity evidence modules,
+such as motion analysis or DOM snapshots, require immutable evidence, coverage,
 comparison semantics, focused self-tests, and no universal completion gate.
 Broad crawler abstractions remain outside this parity spine.
 

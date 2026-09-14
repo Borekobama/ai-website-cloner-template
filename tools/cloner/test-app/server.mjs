@@ -10,6 +10,7 @@ const COMMON_CSS = `
   .overlay { border: 2px solid #345; margin-top: 1rem; padding: 1rem; }
   .added-item { color: #345; }
   .noise-value { color: #666; }
+  .clone-visual-defect { border: 3px solid crimson; padding: 0.5rem; }
 `;
 
 function pageDocument({ route, mode, repaired, port }) {
@@ -57,7 +58,7 @@ function pageDocument({ route, mode, repaired, port }) {
   ` : '';
   const body = route === '/home' ? `
     <main class="page-shell${extraCloneClass}">
-      <h1>Parity fixture</h1>
+      <div data-visual-region="chrome" class="${cloneNeedsRepair ? 'clone-visual-defect' : ''}"><h1>Parity fixture</h1></div>
       <p class="readable-runtime">Readable stylesheet runtime class.</p>
       <div class="toolbar">
         ${moreControls}

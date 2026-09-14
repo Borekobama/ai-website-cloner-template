@@ -1,8 +1,9 @@
-import { CONCRETE_RUN_ID, listRuns, readArtifact, readManifest } from './run-store.mjs';
+import { CONCRETE_RUN_ID, canonicalJson, listRuns, readArtifact, readManifest } from './run-store.mjs';
 import { comparatorForDimension, dimensionsForControl, policySha256 } from './policy.mjs';
 import { stableFindingId } from './ledger.mjs';
+import { compareVisualRegionImages, visualRoutePath } from './visual-regions.mjs';
 
-const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit']);
+const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png']);
 const METADATA_KINDS = new Set(['policy-snapshot', 'failure', 'route-failure', 'report']);
 const CONTROL_EFFECT_DIMENSIONS = new Set(['url', 'aria', 'overlay', 'dom', 'style', 'network']);
 const FINDING_SEMANTICS = {
@@ -14,6 +15,11 @@ const FINDING_SEMANTICS = {
 function readJson(root, siteKey, runId, path) {
   const bytes = readArtifact(root, siteKey, runId, path);
   return JSON.parse(bytes.toString('utf8'));
+}
+
+function readOptionalJson(root, siteKey, manifest, path) {
+  if (!manifest.artifacts.some((artifact) => artifact.path === path)) return null;
+  return readJson(root, siteKey, manifest.runId, path);
 }
 
 function evidence(runId, artifact, locator) {
@@ -237,27 +243,113 @@ function compareClassAudits(source, clone, sourceRunId, cloneRunId) {
   return { findings, comparatorCoverage };
 }
 
+function visualRegionsBySubject(value) {
+  const result = new Map();
+  for (const route of value?.routes ?? []) {
+    for (const region of route.regions ?? []) {
+      result.set(`${route.route}|${region.id}`, { ...region, route: route.route });
+    }
+  }
+  return result;
+}
+
+function visualSubject(region) {
+  return { route: region.route, regionId: region.id, viewport: region.viewport };
+}
+
+function compareVisualRegions({ root, siteKey, source, clone, sourceRunId, cloneRunId, reportRunId = null }) {
+  if (!source && !clone) return { findings: [], comparatorCoverage: [], visualArtifacts: [], coverage: { configured: false, complete: false, reason: 'visual-evidence-missing' } };
+  const configMismatch = Boolean(source?.configSha256 && clone?.configSha256 && source.configSha256 !== clone.configSha256);
+  const sourceRegions = visualRegionsBySubject(source);
+  const cloneRegions = visualRegionsBySubject(clone);
+  const sourceConfiguredRegions = new Map((source?.config?.regions ?? []).map((region) => [`${region.route}|${region.id}`, region]));
+  const cloneConfiguredRegions = new Map((clone?.config?.regions ?? []).map((region) => [`${region.route}|${region.id}`, region]));
+  const configuredRegions = new Map([...sourceConfiguredRegions, ...cloneConfiguredRegions]);
+  const findings = [];
+  const comparatorCoverage = [];
+  const visualArtifacts = [];
+  const subjects = new Set([...configuredRegions.keys(), ...sourceRegions.keys(), ...cloneRegions.keys()]);
+  for (const key of subjects) {
+    const sourceRegion = sourceRegions.get(key);
+    const cloneRegion = cloneRegions.get(key);
+    const sourceConfigured = sourceConfiguredRegions.get(key);
+    const cloneConfigured = cloneConfiguredRegions.get(key);
+    const region = sourceConfigured ?? cloneConfigured ?? sourceRegion ?? cloneRegion;
+    const subject = visualSubject(region);
+    const mode = sourceConfigured?.mode ?? sourceRegion?.mode ?? cloneConfigured?.mode ?? cloneRegion?.mode ?? region.mode ?? 'gate';
+    const visualPolicy = {
+      classification: sourceRegion?.classification ?? sourceConfigured?.classification ?? region.classification ?? 'invariant',
+      mode,
+      threshold: sourceRegion?.threshold ?? region.threshold ?? 0.001,
+      pixelThreshold: sourceRegion?.pixelThreshold ?? region.pixelThreshold ?? 0.1,
+      maxDiffPixels: sourceRegion?.maxDiffPixels ?? region.maxDiffPixels ?? null,
+    };
+    const comparator = { instrument: 'visual-region', evidenceClass: 'visual-region', dimension: 'pixels', mode, policy: visualPolicy };
+    const complete = !configMismatch && Boolean(sourceRegion?.status === 'captured' && cloneRegion?.status === 'captured');
+    const coverageEntry = { comparator, subject, complete };
+    comparatorCoverage.push(coverageEntry);
+    if (!complete) {
+      if (mode !== 'ignore' || configMismatch) findings.push({
+        category: 'visual-region-incomplete',
+        subject,
+        status: 'informational',
+        comparator,
+        policy: visualPolicy,
+        observed: { source: sourceRegion?.status ?? 'missing', clone: cloneRegion?.status ?? 'missing', ...(configMismatch ? { reason: 'config-mismatch' } : {}) },
+        evidence: {
+          source: sourceRegion ? { runId: sourceRunId, artifact: 'measurements/visual-regions.json', locator: `#/routes/${source.routes.findIndex((entry) => entry.route === region.route)}/regions` } : null,
+          clone: cloneRegion ? { runId: cloneRunId, artifact: 'measurements/visual-regions.json', locator: `#/routes/${clone.routes.findIndex((entry) => entry.route === region.route)}/regions` } : null,
+        },
+      });
+      continue;
+    }
+    if (mode === 'ignore') continue;
+    const sourceBytes = readArtifact(root, siteKey, sourceRunId, sourceRegion.artifactPath);
+    const cloneBytes = readArtifact(root, siteKey, cloneRunId, cloneRegion.artifactPath);
+    const comparison = compareVisualRegionImages(sourceBytes, cloneBytes, {
+      threshold: sourceRegion.threshold,
+      pixelThreshold: sourceRegion.pixelThreshold,
+      maxDiffPixels: sourceRegion.maxDiffPixels ?? null,
+    });
+    coverageEntry.complete = comparison.complete;
+    if (comparison.reason === 'dimension-mismatch') {
+      findings.push({ category: 'visual-region-mismatch', subject, status: mode === 'gate' ? 'open' : 'informational', policy: visualPolicy, comparator, observed: comparison, evidence: { source: { runId: sourceRunId, artifact: sourceRegion.artifactPath, locator: '#' }, clone: { runId: cloneRunId, artifact: cloneRegion.artifactPath, locator: '#' } } });
+      continue;
+    }
+    if (!comparison.equal) {
+      const routeKey = region.route.replace(/[^a-z0-9]+/giu, '-').replace(/^-|-$/gu, '') || 'root';
+      const diffPath = `visual-diffs/${routeKey}/${region.id}.diff.png`;
+      visualArtifacts.push({ path: diffPath, image: comparison.diff, visibility: 'private' });
+      findings.push({ category: 'visual-region-mismatch', subject, status: mode === 'gate' ? 'open' : 'informational', policy: visualPolicy, comparator, observed: { diffPixels: comparison.diffPixels, diffRatio: comparison.diffRatio, width: comparison.width, height: comparison.height }, evidence: { source: { runId: sourceRunId, artifact: sourceRegion.artifactPath, locator: '#' }, clone: { runId: cloneRunId, artifact: cloneRegion.artifactPath, locator: '#' }, diff: reportRunId ? { runId: reportRunId, artifact: diffPath, locator: '#' } : null } });
+    }
+  }
+  return { findings, comparatorCoverage, visualArtifacts, coverage: { configured: true, complete: !configMismatch && comparatorCoverage.every((entry) => entry.complete || entry.comparator.mode === 'ignore'), ...(configMismatch ? { reason: 'config-mismatch' } : {}), regionsCompared: comparatorCoverage.filter((entry) => entry.complete).length, regionsConfigured: configuredRegions.size || comparatorCoverage.length } };
+}
+
 function unsupportedKinds(sourceManifest, cloneManifest) {
   const kinds = [...new Set([...sourceManifest.artifacts, ...cloneManifest.artifacts].map((artifact) => artifact.kind))];
   return kinds.filter((kind) => kind && !SUPPORTED_KINDS.has(kind) && !METADATA_KINDS.has(kind)).map((kind) => ({ kind, status: 'unsupported' }));
 }
 
-export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceRunId, cloneRunId, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
+export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
   if (!CONCRETE_RUN_ID.test(sourceRunId) || !CONCRETE_RUN_ID.test(cloneRunId)) {
     throw new Error('Comparisons require concrete source and clone run IDs');
   }
   const routeComparison = compareRoutes(sourceRoutes, cloneRoutes, sourceRunId, cloneRunId);
   const controlComparison = compareControls(sourceControls, cloneControls, sourceRunId, cloneRunId, policy, sourceControlAudit, cloneControlAudit);
   const classComparison = compareClassAudits(sourceClasses, cloneClasses, sourceRunId, cloneRunId);
-  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings];
+  const visualComparison = compareVisualRegions({ root, siteKey, source: sourceVisual, clone: cloneVisual, sourceRunId, cloneRunId, reportRunId });
+  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings];
   return {
     schemaVersion: 1,
     semantics: FINDING_SEMANTICS,
     sourceRunId,
     cloneRunId,
     supportedKinds: [...SUPPORTED_KINDS],
-    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage],
     findings,
+    visualCoverage: visualComparison.coverage,
+    visualArtifacts: visualComparison.visualArtifacts,
   };
 }
 
@@ -322,7 +414,7 @@ export function selectControlAudit({ root = process.cwd(), siteKey, measurementR
   return null;
 }
 
-export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneRunId, policy = {}, sourceAuditRunId = null, cloneAuditRunId = null } = {}) {
+export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneRunId, reportRunId = null, policy = {}, sourceAuditRunId = null, cloneAuditRunId = null } = {}) {
   const sourceManifest = readManifest(root, siteKey, sourceRunId);
   const cloneManifest = readManifest(root, siteKey, cloneRunId);
   if (sourceManifest.status !== 'closed' || cloneManifest.status !== 'closed') throw new Error('Only closed runs can be compared');
@@ -334,11 +426,13 @@ export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneR
   const cloneClasses = readJson(root, siteKey, cloneRunId, 'measurements/classes.json');
   const sourceCoverage = readJson(root, siteKey, sourceRunId, 'coverage.json');
   const cloneCoverage = readJson(root, siteKey, cloneRunId, 'coverage.json');
+  const sourceVisual = readOptionalJson(root, siteKey, sourceManifest, 'measurements/visual-regions.json');
+  const cloneVisual = readOptionalJson(root, siteKey, cloneManifest, 'measurements/visual-regions.json');
   const sourceAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: sourceRunId, auditRunId: sourceAuditRunId, policy });
   const cloneAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: cloneRunId, auditRunId: cloneAuditRunId, policy });
   const sourceControlAudit = sourceAuditSelection?.bundle ?? null;
   const cloneControlAudit = cloneAuditSelection?.bundle ?? null;
-  const report = compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceRunId, cloneRunId, policy, sourceControlAudit, cloneControlAudit });
+  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
   return {
     ...report,
     source: { runId: sourceRunId, target: sourceManifest.target, scope: sourceManifest.scope },
@@ -375,6 +469,8 @@ function inferFindingComparator(finding) {
   }
   if (category === 'route-missing' || category === 'route-status-mismatch') return comparator('route-inventory', 'route-status', 'status');
   if (category === 'new-dead-runtime-class') return comparator('compiled-css', 'dead-runtime-class', 'class-presence');
+  if (category === 'visual-region-mismatch') return comparator('visual-region', 'visual-region', 'pixels', finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
+  if (category === 'visual-region-incomplete') return comparator('visual-region', 'visual-region', 'pixels', finding?.comparator?.mode ?? 'informational');
   return null;
 }
 
@@ -384,19 +480,22 @@ function sameControlSubject(left = {}, right = {}) {
 
 function comparatorSubjectsMatch(instrument, expected = {}, actual = {}) {
   if (instrument === 'dead-controls' || instrument === 'static-control') return sameControlSubject(expected, actual);
+  if (instrument === 'visual-region') return (expected.route ?? null) === (actual.route ?? null)
+    && (expected.regionId ?? null) === (actual.regionId ?? null)
+    && JSON.stringify(expected.viewport ?? null) === JSON.stringify(actual.viewport ?? null);
   return (expected.route ?? null) === (actual.route ?? null);
 }
 
 function reportComparisonScope(report, route) {
   const side = (entry, details) => {
-    const coveredRoutes = entry?.scope?.routesCompleted ?? entry?.scope?.routesRequested ?? [];
+    const coveredRoutes = (entry?.scope?.routesCompleted ?? entry?.scope?.routesRequested ?? []).map(visualRoutePath);
     const scope = details?.scope ?? null;
     return {
       targetKind: entry?.target?.kind ?? null,
       scope,
       inventoryBacked: scope !== null && scope !== 'ad-hoc',
       inventoryRunId: details?.inventory?.runId ?? entry?.scope?.inventoryRunId ?? null,
-      routeCovered: route ? coveredRoutes.includes(route) : true,
+      routeCovered: route ? coveredRoutes.includes(visualRoutePath(route)) : true,
     };
   };
   return {
@@ -425,9 +524,12 @@ export function findingCanClose(previousSummary, report) {
     if (current.instrument !== required.instrument || current.evidenceClass !== required.evidenceClass) return false;
     if ((current.dimension ?? null) !== (required.dimension ?? null)) return false;
     if (required.mode && current.mode && required.mode !== current.mode) return false;
+    if (required.instrument === 'visual-region') {
+      if (canonicalJson(finding.policy ?? null) !== canonicalJson(current.policy ?? null)) return false;
+    }
     return comparatorSubjectsMatch(required.instrument, finding.subject ?? finding, entry.subject ?? {});
   });
-  if (!coverage) return false;
+  if (!coverage || coverage.complete === false) return false;
   return comparisonScopesCompatible(finding.comparisonScope ?? null, reportComparisonScope(report, finding.subject?.route ?? finding.route ?? null));
 }
 
