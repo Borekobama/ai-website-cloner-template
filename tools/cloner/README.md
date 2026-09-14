@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.9.0
+# Cloner parity CLI v0.10.0
 
-The cloner CLI is the repository-owned v0.9.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.10.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -85,6 +85,22 @@ container queries. Responsive findings retain concrete source/clone run IDs and
 private route-artifact locators, and `coverage.json` records responsive capture
 and comparison completeness when the module is requested.
 
+Capture network assets and page associations with `--assets`:
+
+```bash
+npm run cloner -- measure --target source --url https://example.test --site example.test-01234567 --routes /home,/billing --profile .cloner-profiles/primary --inventory --assets
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --inventory --assets
+npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN"
+```
+
+Asset evidence records redacted request/final URLs, status, MIME, resource type,
+bounded response byte counts and hashes, plus DOM/CSS association locators.
+Response bodies, headers, cookies, and credentials are never persisted. Route
+artifacts stay private. `measurements/assets.json` contains only metadata and
+artifact references. Asset hash differences are informational, not universal
+completion gates. Unreadable stylesheets or response bodies make asset coverage
+incomplete without failing ordinary route measurement.
+
 Source interactions are blocked unless `parity-exceptions.json` contains an
 explicit matching allowance. Blocked controls are still inventoried, but are
 never clicked. Authenticated profiles belong in `.cloner-profiles/`, which is
@@ -125,7 +141,7 @@ when deliberately promoting reviewed, redacted evidence into tracked
 
 Measurements are intentionally small and explicit. The supported parity spine
 is route inventory, control inventory, route-scoped runtime/compiled classes,
-coverage, motion/state evidence, responsive CSS evidence, Chromium DOMSnapshot evidence, two audits, region-scoped visual evidence,
+coverage, motion/state evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot evidence, two audits, region-scoped visual evidence,
 policy-aware comparison, and an append-only JSONL findings ledger. Optional
 modules, such as DOM snapshots, require immutable evidence, coverage, comparison
 semantics, focused self-tests, and no universal completion gate.

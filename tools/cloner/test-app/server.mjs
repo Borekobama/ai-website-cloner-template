@@ -85,6 +85,8 @@ function pageDocument({ route, mode, repaired, port }) {
     <main class="page-shell"><h1>Noisy timer</h1><p class="noise-value" id="noise-value">0</p><div data-control-region="noise-dead"><button class="fixture-control" data-control-class="dead" aria-label="Noisy dead button">Noisy dead button</button></div></main>
   ` : route === '/responsive' ? `
     <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p></main>
+  ` : route === '/assets' ? `
+    <main class="page-shell"><h1>Asset fixture</h1><img src="/fixture.svg" alt="Fixture asset"><div style="background-image: url('/fixture.svg')">Asset reference.</div></main>
   ` : route === '/incomplete-css' ? `
     <main class="page-shell"><h1>Incomplete CSS</h1><p class="incomplete-runtime">Cross-origin stylesheet candidate.</p></main>
   ` : route === '/broken-hydration' ? `
@@ -131,7 +133,12 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       response.end('.incomplete-runtime { color: darkorange; }');
       return;
     }
-    const allowed = new Set(['/home', '/noise', '/responsive', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination']);
+    if (requestUrl.pathname === '/fixture.svg') {
+      response.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' });
+      response.end('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="seagreen"/></svg>');
+      return;
+    }
+    const allowed = new Set(['/home', '/noise', '/responsive', '/assets', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination']);
     if (!allowed.has(requestUrl.pathname)) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       response.end('Not found');

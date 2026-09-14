@@ -209,6 +209,26 @@ async function main() {
     assert.equal(responsiveDiff.json.responsiveCoverage.complete, true);
     assert.deepEqual(responsiveDiff.json.findings, [], 'matching responsive fixture should produce no responsive findings');
 
+    const assetSourceMeasurement = await runCli(parityRoot, [
+      'measure', '--target', 'source', '--url', source.url, '--routes', '/assets', '--profile', profile, '--inventory', '--assets',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(assetSourceMeasurement.code, 0, assetSourceMeasurement.stderr);
+    const assetCloneMeasurement = await runCli(parityRoot, [
+      'measure', '--target', 'clone', '--url', clone.url, '--routes', '/assets', '--inventory', '--assets',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(assetCloneMeasurement.code, 0, assetCloneMeasurement.stderr);
+    assert.equal(assetSourceMeasurement.json.coverage.measurement.assetCoverageComplete, true);
+    assert.equal(assetCloneMeasurement.json.coverage.measurement.assetCoverageComplete, true);
+    const assetDiff = await runCli(parityRoot, [
+      'diff', '--source', assetSourceMeasurement.json.runId, '--clone', assetCloneMeasurement.json.runId,
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(assetDiff.code, 0, assetDiff.stderr);
+    assert.equal(assetDiff.json.assetCoverage.complete, true);
+    assert.deepEqual(assetDiff.json.findings, [], 'matching asset fixture should produce no asset findings');
+
     const findings = await runCli(parityRoot, ['findings', ...commonArgs(parityRoot, policyPath)]);
     assert.equal(findings.code, 0, findings.stderr);
     assert.ok(findings.json.findings.length > 0, 'initial diff must have appended findings');

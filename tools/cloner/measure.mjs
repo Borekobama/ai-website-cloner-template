@@ -23,6 +23,7 @@ import { captureMotion } from './motion.mjs';
 import { captureDomSnapshot } from './dom-snapshot.mjs';
 import { captureVisualRegions, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 import { captureResponsive, responsiveIndexEntry } from './responsive.mjs';
+import { assetIndexEntry, captureAssetManifest, createAssetTracker } from './assets.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
 
@@ -367,6 +368,7 @@ export async function measureTarget({
   motionSample = false,
   domSnapshot = false,
   responsive = false,
+  assets = false,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -436,9 +438,11 @@ export async function measureTarget({
     const motionObservations = [];
     const domSnapshotObservations = [];
     const responsiveObservations = [];
+    const assetObservations = [];
     const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
     for (const [routeIndex, route] of requestedRoutes.entries()) {
       const tracker = createRequestTracker(page);
+      const assetTracker = assets ? createAssetTracker(page) : null;
       const artifactKey = routeArtifactKey(route, routeIndex);
       try {
         let response;
@@ -490,6 +494,9 @@ export async function measureTarget({
         const responsiveObservation = responsive
           ? await captureResponsive(page, { route })
           : null;
+        const assetObservation = assets
+          ? await captureAssetManifest(page, { route, tracker: assetTracker })
+          : null;
         const requestRecord = { route, requests: [...tracker.statuses], failures: [...tracker.failures] };
         const routeRecord = {
           route,
@@ -538,6 +545,11 @@ export async function measureTarget({
           writeArtifact(root, siteKey, runId, artifactPath, responsiveObservation, { kind: 'responsive-observation', visibility: 'private' });
           responsiveObservations.push({ observation: responsiveObservation, artifactPath });
         }
+        if (assetObservation) {
+          const artifactPath = `measurements/assets/${artifactKey}.json`;
+          writeArtifact(root, siteKey, runId, artifactPath, assetObservation, { kind: 'asset-observation', visibility: 'private' });
+          assetObservations.push({ observation: assetObservation, artifactPath });
+        }
         controls.push(...routeControls);
         classObservations.push(routeClasses);
         requestsByRoute.push(requestRecord);
@@ -561,6 +573,7 @@ export async function measureTarget({
         throw error;
       } finally {
         tracker.stop();
+        assetTracker?.stop();
       }
     }
     const audit = auditDeadRuntimeClasses(classObservations, { runId, scope: 'requested-routes' });
@@ -641,6 +654,16 @@ export async function measureTarget({
       };
       writeArtifact(root, siteKey, runId, 'measurements/responsive.json', responsiveIndex, { kind: 'responsive-observation-index' });
     }
+    if (assets) {
+      const assetIndex = {
+        schemaVersion: 1,
+        kind: 'asset-observation-index',
+        routes: assetObservations.map(({ observation, artifactPath }) => assetIndexEntry(observation, artifactPath)),
+        complete: assetObservations.length === routeRecords.length
+          && assetObservations.every(({ observation }) => observation.complete === true),
+      };
+      writeArtifact(root, siteKey, runId, 'measurements/assets.json', assetIndex, { kind: 'asset-observation-index' });
+    }
     const inventory = inventoryContext
       ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
       : authoritativeInventory
@@ -686,6 +709,17 @@ export async function measureTarget({
           responsiveStylesheetsUnreadable: responsiveObservations.reduce((sum, { observation }) => sum + (observation.stylesheetCoverage?.unreadable ?? 0), 0),
           responsiveCoverageComplete: responsiveObservations.length === routeRecords.length
             && responsiveObservations.every(({ observation }) => observation.complete === true),
+        } : {}),
+        ...(assets ? {
+          assetRoutesCaptured: assetObservations.length,
+          assetRoutesComplete: assetObservations.filter(({ observation }) => observation.complete === true).length,
+          assetResponsesObserved: assetObservations.reduce((sum, { observation }) => sum + (observation.responseCoverage?.observed ?? 0), 0),
+          assetResponsesHashed: assetObservations.reduce((sum, { observation }) => sum + (observation.responseCoverage?.hashed ?? 0), 0),
+          assetBodyFailures: assetObservations.reduce((sum, { observation }) => sum + (observation.responseCoverage?.bodyFailures ?? 0), 0),
+          assetHttpFailures: assetObservations.reduce((sum, { observation }) => sum + (observation.responseCoverage?.httpFailures ?? 0), 0),
+          assetRequestFailures: assetObservations.reduce((sum, { observation }) => sum + (observation.responseCoverage?.requestFailures ?? 0), 0),
+          assetCoverageComplete: assetObservations.length === routeRecords.length
+            && assetObservations.every(({ observation }) => observation.complete === true),
         } : {}),
       },
       scope: inventoryScope,

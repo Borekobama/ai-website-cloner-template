@@ -17,6 +17,7 @@ import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual
 import { compareMotionObservations } from './motion.mjs';
 import { captureDomSnapshot, domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareResponsiveEvidence, generateExactPixelProbes, normalizeCssCondition, parseResponsiveCondition, responsiveThresholds } from './responsive.mjs';
+import { compareAssetEvidence } from './assets.mjs';
 import { PNG } from 'pngjs';
 import { canonicalJson, sha256 } from './run-store.mjs';
 
@@ -71,6 +72,13 @@ export async function runSelfTests() {
       '20260913T000004Z_clone_d1d2d3d4',
     );
     assert.ok(responsiveComparison.findings.some((finding) => finding.category === 'responsive-media-condition-mismatch'));
+    const assetComparison = compareAssetEvidence(
+      { complete: true, routes: [{ route: '/home', artifactPath: 'measurements/assets/source.json', observation: { route: '/home', complete: true, assets: [{ mime: 'image/png', sha256: 'source' }], responseCoverage: { observed: 1, hashed: 1, bodyFailures: 0 } } }] },
+      { complete: true, routes: [{ route: '/home', artifactPath: 'measurements/assets/clone.json', observation: { route: '/home', complete: true, assets: [{ mime: 'image/png', sha256: 'clone' }], responseCoverage: { observed: 1, hashed: 1, bodyFailures: 0 } } }] },
+      '20260913T000005Z_source_e1e2e3e4',
+      '20260913T000006Z_clone_f1f2f3f4',
+    );
+    assert.ok(assetComparison.findings.some((finding) => finding.category === 'asset-content-mismatch'));
     const motion = compareMotionObservations(
       { routes: [{ route: '/home', observations: [{ key: '/home|button:nth-child(1)|0', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty: 'transform' }, state: { 'data-state': 'closed' }, rendered: { transform: 'matrix(1, 0, 0, 1, 0, 0)' } }] }] },
       { routes: [{ route: '/home', observations: [{ key: '/home|button:nth-child(1)|0', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty: 'opacity' }, state: { 'data-state': 'closed' }, rendered: { transform: 'matrix(1, 0, 0, 1, 0, 0)' } }] }] },
