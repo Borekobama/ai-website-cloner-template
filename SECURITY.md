@@ -53,7 +53,7 @@ security details in public channels.
 
 ## Browser profiles and parity evidence
 
-The v0.5 parity CLI supports persistent Playwright profiles for authenticated
+The v0.7 parity CLI supports persistent Playwright profiles for authenticated
 source measurement. Treat `.cloner-profiles/` as a credential store: keep it
 outside commits, backups shared with untrusted users, screenshots, and CI
 artifacts. Prefer a least-privileged account and a tenant/workspace dedicated

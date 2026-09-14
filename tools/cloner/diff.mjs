@@ -1,9 +1,10 @@
 import { CONCRETE_RUN_ID, canonicalJson, listRuns, readArtifact, readManifest } from './run-store.mjs';
 import { comparatorForDimension, dimensionsForControl, policySha256 } from './policy.mjs';
 import { stableFindingId } from './ledger.mjs';
+import { compareMotionObservations } from './motion.mjs';
 import { compareVisualRegionImages, visualRoutePath } from './visual-regions.mjs';
 
-const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png']);
+const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation']);
 const METADATA_KINDS = new Set(['policy-snapshot', 'failure', 'route-failure', 'report']);
 const CONTROL_EFFECT_DIMENSIONS = new Set(['url', 'aria', 'overlay', 'dom', 'style', 'network']);
 const FINDING_SEMANTICS = {
@@ -331,7 +332,7 @@ function unsupportedKinds(sourceManifest, cloneManifest) {
   return kinds.filter((kind) => kind && !SUPPORTED_KINDS.has(kind) && !METADATA_KINDS.has(kind)).map((kind) => ({ kind, status: 'unsupported' }));
 }
 
-export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
+export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses, cloneClasses, sourceVisual = null, cloneVisual = null, sourceMotion = null, cloneMotion = null, sourceRunId, cloneRunId, reportRunId = null, root = process.cwd(), siteKey, policy = {}, sourceControlAudit = null, cloneControlAudit = null }) {
   if (!CONCRETE_RUN_ID.test(sourceRunId) || !CONCRETE_RUN_ID.test(cloneRunId)) {
     throw new Error('Comparisons require concrete source and clone run IDs');
   }
@@ -339,16 +340,18 @@ export function compareMeasurementData({ sourceRoutes, cloneRoutes, sourceContro
   const controlComparison = compareControls(sourceControls, cloneControls, sourceRunId, cloneRunId, policy, sourceControlAudit, cloneControlAudit);
   const classComparison = compareClassAudits(sourceClasses, cloneClasses, sourceRunId, cloneRunId);
   const visualComparison = compareVisualRegions({ root, siteKey, source: sourceVisual, clone: cloneVisual, sourceRunId, cloneRunId, reportRunId });
-  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings];
+  const motionComparison = compareMotionObservations(sourceMotion, cloneMotion, sourceRunId, cloneRunId);
+  const findings = [...routeComparison.findings, ...controlComparison.findings, ...classComparison.findings, ...visualComparison.findings, ...motionComparison.findings];
   return {
     schemaVersion: 1,
     semantics: FINDING_SEMANTICS,
     sourceRunId,
     cloneRunId,
     supportedKinds: [...SUPPORTED_KINDS],
-    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...controlComparison.comparatorCoverage, ...classComparison.comparatorCoverage, ...visualComparison.comparatorCoverage, ...motionComparison.comparatorCoverage],
     findings,
     visualCoverage: visualComparison.coverage,
+    motionCoverage: motionComparison.coverage,
     visualArtifacts: visualComparison.visualArtifacts,
   };
 }
@@ -428,11 +431,13 @@ export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneR
   const cloneCoverage = readJson(root, siteKey, cloneRunId, 'coverage.json');
   const sourceVisual = readOptionalJson(root, siteKey, sourceManifest, 'measurements/visual-regions.json');
   const cloneVisual = readOptionalJson(root, siteKey, cloneManifest, 'measurements/visual-regions.json');
+  const sourceMotion = readOptionalJson(root, siteKey, sourceManifest, 'measurements/motion.json');
+  const cloneMotion = readOptionalJson(root, siteKey, cloneManifest, 'measurements/motion.json');
   const sourceAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: sourceRunId, auditRunId: sourceAuditRunId, policy });
   const cloneAuditSelection = selectControlAudit({ root, siteKey, measurementRunId: cloneRunId, auditRunId: cloneAuditRunId, policy });
   const sourceControlAudit = sourceAuditSelection?.bundle ?? null;
   const cloneControlAudit = cloneAuditSelection?.bundle ?? null;
-  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
+  const report = compareMeasurementData({ root, siteKey, sourceRoutes, cloneRoutes, sourceControls, cloneControls, sourceClasses: sourceClasses.audit ?? sourceClasses, cloneClasses: cloneClasses.audit ?? cloneClasses, sourceVisual, cloneVisual, sourceMotion, cloneMotion, sourceRunId, cloneRunId, reportRunId, policy, sourceControlAudit, cloneControlAudit });
   return {
     ...report,
     source: { runId: sourceRunId, target: sourceManifest.target, scope: sourceManifest.scope },
@@ -471,6 +476,7 @@ function inferFindingComparator(finding) {
   if (category === 'new-dead-runtime-class') return comparator('compiled-css', 'dead-runtime-class', 'class-presence');
   if (category === 'visual-region-mismatch') return comparator('visual-region', 'visual-region', 'pixels', finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category === 'visual-region-incomplete') return comparator('visual-region', 'visual-region', 'pixels', finding?.comparator?.mode ?? 'informational');
+  if (category.startsWith('motion-')) return comparator('motion', 'motion', category.replace(/^motion-(?:source|clone)-|^motion-/u, '').replace(/-mismatch$/u, ''), finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   return null;
 }
 
@@ -483,6 +489,11 @@ function comparatorSubjectsMatch(instrument, expected = {}, actual = {}) {
   if (instrument === 'visual-region') return (expected.route ?? null) === (actual.route ?? null)
     && (expected.regionId ?? null) === (actual.regionId ?? null)
     && JSON.stringify(expected.viewport ?? null) === JSON.stringify(actual.viewport ?? null);
+  if (instrument === 'motion') return (expected.route ?? null) === (actual.route ?? null)
+    && (expected.role ?? null) === (actual.role ?? null)
+    && (expected.name ?? null) === (actual.name ?? null)
+    && (expected.motionId ?? null) === (actual.motionId ?? null)
+    && (expected.occurrence ?? null) === (actual.occurrence ?? null);
   return (expected.route ?? null) === (actual.route ?? null);
 }
 

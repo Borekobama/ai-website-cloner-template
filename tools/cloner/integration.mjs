@@ -11,7 +11,7 @@ import { startFixtureServer } from './test-app/server.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const CLI = join(ROOT, 'tools', 'cloner', 'cli.mjs');
-const SITE = 'fixture.local-0.5';
+const SITE = 'fixture.local-0.7';
 const ROUTES = ['/home', '/noise', '/incomplete-css', '/destination'];
 
 function runCli(root, args) {
@@ -110,8 +110,8 @@ async function main() {
     assert.notEqual(unverified.code, 0, 'unverified hydration route must fail clone measurement');
     assert.match(unverified.stderr, /Clone runtime is not hydrated on \/unverified-hydration; evidence=unverified/);
 
-    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', '--visual-regions', visualConfigPath]);
-    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', '--visual-regions', visualConfigPath]);
+    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', '--visual-regions', visualConfigPath, '--motion-sample']);
+    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', '--visual-regions', visualConfigPath, '--motion-sample']);
     const sourceRun = sourceMeasurement.runId;
     const cloneRun = cloneMeasurement.runId;
     assert.match(sourceRun, /^\d{8}T\d{6}Z_source_[a-f0-9]{8}$/);
@@ -141,9 +141,11 @@ async function main() {
       target: 'comparison',
       comparison: { sourceKind: 'source', cloneKind: 'clone' },
     })));
-    for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class', 'visual-region-mismatch']) {
+    for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class', 'visual-region-mismatch', 'motion-declared-mismatch']) {
       assert.ok(initialCategories.has(category), `expected initial finding ${category}`);
     }
+    assert.equal(initialCategories.has('motion-transform-mismatch'), false, 'equivalent transform longhands must compare equal');
+    assert.equal(initialCategories.has('motion-samples-mismatch'), false, 'deterministic samples must compare equal');
 
     const cloneObservations = cloneAudit.audits.flatMap((entry) => entry.observations);
     const dead = cloneObservations.find((observation) => observation.name === 'Dead button');
@@ -172,7 +174,7 @@ async function main() {
 
     await clone.close();
     clone = await startFixtureServer({ mode: 'clone', repaired: true });
-    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath]);
+    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath, '--motion-sample']);
     const repairedAudit = await audit(parityRoot, policyPath, 'clone', repairedMeasurement.runId);
     const repairedClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'clone', '--run', repairedMeasurement.runId, ...commonArgs(parityRoot, policyPath)]);
     assert.equal(repairedClasses.code, 0, repairedClasses.stderr);

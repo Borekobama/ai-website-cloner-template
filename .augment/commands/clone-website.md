@@ -221,7 +221,8 @@ confident parity findings.
 
 The common measurement envelope is small and kind-specific. Initial supported
 kinds are route inventory, control observations, route-scoped runtime classes,
-compiled CSS classes, coverage, and the two audits. Preserve per-route
+compiled CSS classes, coverage, motion/state evidence, region-scoped visual
+evidence, and the two audits. Preserve per-route
 provenance before aggregating class observations; one route's development CSS
 cannot represent another route.
 
@@ -268,9 +269,14 @@ For configured invariant visual regions, pass the same versioned configuration t
 source and clone measurements:
 
 ```bash
-npm run cloner -- measure --target source --url <source-origin> --site <site-key> --routes <route,...> --profile .cloner-profiles/primary --inventory --visual-regions <visual-regions.json>
-npm run cloner -- measure --target clone --url <clone-origin> --site <site-key> --routes <route,...> --inventory --visual-regions <visual-regions.json>
+npm run cloner -- measure --target source --url <source-origin> --site <site-key> --routes <route,...> --profile .cloner-profiles/primary --inventory --visual-regions <visual-regions.json> --motion
+npm run cloner -- measure --target clone --url <clone-origin> --site <site-key> --routes <route,...> --inventory --visual-regions <visual-regions.json> --motion
 ```
+
+Pass `--motion` to both measurements when reviewing declared transitions,
+animations, state attributes, and canonical rendered transforms. Add
+`--motion-sample` when deterministic Web Animations API samples are needed.
+Declared motion/state mismatches are parity gates. Samples remain informational.
 
 Visual regions are explicit evidence modules. Compare only configured regions;
 never use a whole-page pixel score. Keep screenshot evidence private by default.
