@@ -248,10 +248,11 @@ function recordCloneHealthAuditFindings({
 
 async function validateSourceAuditPage(page, expected) {
   const observedUrl = new URL(page.url());
-  if (observedUrl.origin !== expected.origin) {
-    return { valid: false, reason: `Source trial origin ${observedUrl.origin} does not match ${expected.origin}` };
+  const expectedOrigin = new URL(expected.origin).origin;
+  if (observedUrl.origin !== expectedOrigin) {
+    return { valid: false, reason: `Source trial origin ${observedUrl.origin} does not match ${expectedOrigin}` };
   }
-  const pathname = normalizedPathname(observedUrl.href, expected.origin);
+  const pathname = normalizedPathname(observedUrl.href, expectedOrigin);
   if (LOGIN_PATH.test(pathname)) return { valid: false, reason: 'Source trial is redirected to an authentication route' };
   if (pathname !== expected.pathname) {
     return { valid: false, reason: `Source trial pathname ${pathname} does not match expected ${expected.pathname}` };
