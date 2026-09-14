@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.8.0
+# Cloner parity CLI v0.9.0
 
-The cloner CLI is the repository-owned v0.8.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.9.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -15,7 +15,7 @@ npm run cloner -- audit dead-controls --site example.test-01234567 --target sour
 SOURCE_AUDIT=20260914T120200Z_audit-controls_2345bcde
 npm run cloner -- audit dead-controls --site example.test-01234567 --target clone --run "$CLONE_RUN"
 CLONE_AUDIT=20260914T120300Z_audit-controls_3456cdef
-npm run cloner -- audit dead-classes --site example.test-01234567 --target clone --run current
+npm run cloner -- audit dead-classes --site example.test-01234567 --target clone --run "$CLONE_RUN"
 npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN" --source-audit "$SOURCE_AUDIT" --clone-audit "$CLONE_AUDIT"
 npm run cloner -- findings --site example.test-01234567
 npm run cloner -- fixture freeze --site example.test-01234567 --target clone --run "$CLONE_RUN" --name repaired-menu
@@ -58,6 +58,33 @@ DOMSnapshot artifacts include flattened DOM, layout, paint order, selected
 computed styles, redacted content, and per-route fingerprints. They stay private
 by default and provide source evidence for builders and later fidelity modules.
 
+Discover responsive CSS behavior with an explicit responsive measurement on
+both sides:
+
+```bash
+npm run cloner -- measure --target source --url https://example.test --site example.test-01234567 --routes /home,/billing --profile .cloner-profiles/primary --inventory --responsive
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --inventory --responsive
+npm run cloner -- diff --site example.test-01234567 --source "$SOURCE_RUN" --clone "$CLONE_RUN"
+```
+
+`--responsive` walks every readable stylesheet in `document.styleSheets`,
+records media and container conditions plus stylesheet readability, and parses
+px width/height thresholds along with orientation and
+`prefers-reduced-motion`. Each discovered px threshold is probed at exactly one
+pixel below, at the threshold, and one pixel above. Probe evidence records the
+actual viewport, matching media conditions, and bounded visible-control/layout
+summaries. Full route evidence is a private append-only artifact; the aggregate
+`measurements/responsive.json` file contains only route metadata and artifact
+references. Unreadable stylesheets or failed probes make responsive coverage
+incomplete without failing the ordinary route measurement.
+
+Diffs gate differences in discovered media-condition sets and matching media
+probe results. Container-condition differences are informational because the
+browser does not expose a direct `matchMedia` equivalent for arbitrary
+container queries. Responsive findings retain concrete source/clone run IDs and
+private route-artifact locators, and `coverage.json` records responsive capture
+and comparison completeness when the module is requested.
+
 Source interactions are blocked unless `parity-exceptions.json` contains an
 explicit matching allowance. Blocked controls are still inventoried, but are
 never clicked. Authenticated profiles belong in `.cloner-profiles/`, which is
@@ -98,7 +125,7 @@ when deliberately promoting reviewed, redacted evidence into tracked
 
 Measurements are intentionally small and explicit. The supported parity spine
 is route inventory, control inventory, route-scoped runtime/compiled classes,
-coverage, motion/state evidence, Chromium DOMSnapshot evidence, two audits, region-scoped visual evidence,
+coverage, motion/state evidence, responsive CSS evidence, Chromium DOMSnapshot evidence, two audits, region-scoped visual evidence,
 policy-aware comparison, and an append-only JSONL findings ledger. Optional
 modules, such as DOM snapshots, require immutable evidence, coverage, comparison
 semantics, focused self-tests, and no universal completion gate.

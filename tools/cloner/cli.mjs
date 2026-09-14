@@ -32,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.8.0
+AI Website Cloner parity CLI v0.9.0
 
 Usage:
   npm run cloner -- <command> [options]
@@ -69,6 +69,7 @@ Measure options:
   --motion                      Capture declared motion/state evidence
   --motion-sample               Capture deterministic Web Animations API samples with --motion
   --dom-snapshot                Capture Chromium CDP DOMSnapshot evidence
+  --responsive                  Discover responsive CSS conditions and probe px thresholds
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -301,6 +302,7 @@ async function commandMeasure(options) {
     motion: Boolean(options.motion || options['motion-sample']),
     motionSample: Boolean(options['motion-sample']),
     domSnapshot: Boolean(options['dom-snapshot']),
+    responsive: Boolean(options.responsive),
   });
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, coverage: result.coverage });
 }
@@ -470,7 +472,20 @@ function commandDiff(options) {
   const reportData = { ...report, visualArtifacts };
   delete reportData.visualArtifacts;
   writeArtifact(root, siteKey, reportRunId, 'report.json', { ...reportData, reportRunId }, { kind: 'report' });
-  writeArtifact(root, siteKey, reportRunId, 'coverage.json', { inventory: { source: report.coverage.sourceDetails?.inventory ?? null, clone: report.coverage.cloneDetails?.inventory ?? null }, measurement: { routesRequested: report.coverage.source, routesCompleted: report.coverage.clone }, scope: 'comparison' }, { kind: 'coverage' });
+  writeArtifact(root, siteKey, reportRunId, 'coverage.json', {
+    inventory: { source: report.coverage.sourceDetails?.inventory ?? null, clone: report.coverage.cloneDetails?.inventory ?? null },
+    measurement: {
+      routesRequested: report.coverage.source,
+      routesCompleted: report.coverage.clone,
+      ...(report.responsiveCoverage?.configured ? {
+        responsiveRoutesCompared: report.responsiveCoverage.routesCompared ?? 0,
+        responsiveMediaProbesCompared: report.responsiveCoverage.mediaProbesCompared ?? 0,
+        responsiveCoverageComplete: report.responsiveCoverage.complete === true,
+      } : {}),
+    },
+    ...(report.responsiveCoverage?.configured ? { responsive: report.responsiveCoverage } : {}),
+    scope: 'comparison',
+  }, { kind: 'coverage' });
   const closed = closeRun(root, siteKey, reportRunId);
   const previous = new Map(summarizeFindings(readLedger(root, siteKey)).map((finding) => [finding.findingId, finding]));
   const currentEvents = findingEventsFromReport(report).map((event) => {

@@ -16,6 +16,7 @@ import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
 import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual-regions.mjs';
 import { compareMotionObservations } from './motion.mjs';
 import { captureDomSnapshot, domSnapshotCoverage } from './dom-snapshot.mjs';
+import { compareResponsiveEvidence, generateExactPixelProbes, normalizeCssCondition, parseResponsiveCondition, responsiveThresholds } from './responsive.mjs';
 import { PNG } from 'pngjs';
 import { canonicalJson, sha256 } from './run-store.mjs';
 
@@ -59,6 +60,17 @@ export async function runSelfTests() {
     const image = new PNG({ width: 1, height: 1 });
     image.data[3] = 255;
     assert.equal(compareVisualRegionImages(PNG.sync.write(image), PNG.sync.write(image)).equal, true);
+    assert.equal(normalizeCssCondition('screen and ( min-width : 768px )'), 'screen and (min-width:768px)');
+    const responsiveCondition = parseResponsiveCondition('(min-width:768px) and (orientation:landscape)');
+    assert.deepEqual(responsiveCondition.orientation, ['landscape']);
+    assert.deepEqual(generateExactPixelProbes(responsiveThresholds([{ kind: 'media', condition: responsiveCondition.condition, features: responsiveCondition }])).map((probe) => probe.requestedViewport.width), [767, 768, 769]);
+    const responsiveComparison = compareResponsiveEvidence(
+      { complete: true, routes: [{ route: '/home', artifactPath: 'measurements/responsive/source.json', observation: { route: '/home', complete: true, discoveryComplete: true, conditions: { media: [{ condition: '(min-width:768px)' }], container: [] }, probes: [] } }] },
+      { complete: true, routes: [{ route: '/home', artifactPath: 'measurements/responsive/clone.json', observation: { route: '/home', complete: true, discoveryComplete: true, conditions: { media: [{ condition: '(min-width:800px)' }], container: [] }, probes: [] } }] },
+      '20260913T000003Z_source_c1c2c3c4',
+      '20260913T000004Z_clone_d1d2d3d4',
+    );
+    assert.ok(responsiveComparison.findings.some((finding) => finding.category === 'responsive-media-condition-mismatch'));
     const motion = compareMotionObservations(
       { routes: [{ route: '/home', observations: [{ key: '/home|button:nth-child(1)|0', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty: 'transform' }, state: { 'data-state': 'closed' }, rendered: { transform: 'matrix(1, 0, 0, 1, 0, 0)' } }] }] },
       { routes: [{ route: '/home', observations: [{ key: '/home|button:nth-child(1)|0', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty: 'opacity' }, state: { 'data-state': 'closed' }, rendered: { transform: 'matrix(1, 0, 0, 1, 0, 0)' } }] }] },
