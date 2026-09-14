@@ -59,6 +59,13 @@ function logicalSubject(finding, subject) {
       ['route', 'className'].filter((key) => subject[key] !== undefined).map((key) => [key, subject[key]]),
     ));
   }
+  if (finding?.comparator?.instrument === 'motion') {
+    return withoutRunIds(Object.fromEntries(
+      ['route', 'role', 'name', 'motionId', 'occurrence']
+        .filter((key) => subject[key] !== undefined)
+        .map((key) => [key, subject[key]]),
+    ));
+  }
   return withoutRunIds(subject);
 }
 
@@ -91,7 +98,7 @@ export function stableFindingId(finding) {
         domain: finding?.domain ?? null,
         target: finding?.target ?? null,
         category: finding?.category ?? null,
-        subject: withoutRunIds(subject),
+        subject: logicalSubject(finding, subject),
         policy: withoutRunIds(finding?.policy ?? null),
         comparison: withoutRunIds(finding?.comparison ?? null),
       };

@@ -7,6 +7,7 @@ import { PNG } from 'pngjs';
 import { classNamesFromCss, auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { classifyControl, compareEffectSignatures } from './audits/dead-controls.mjs';
 import { compareMeasurementData, findingCanClose, selectControlAudit } from './diff.mjs';
+import { compareMotionObservations } from './motion.mjs';
 import { appendLedgerEvent, auditFindingCanClose, readLedger, stableFindingId, summarizeFindings } from './ledger.mjs';
 import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
@@ -200,6 +201,62 @@ test('visual capture fails invariant missing and ambiguous selectors', async () 
   const informational = await captureVisualRegions(page(0), { config: { ...config, regions: [{ ...config.regions[0], classification: 'data-dependent', mode: 'informational' }] }, target: 'clone', route: '/home' });
   assert.equal(informational.complete, false);
   assert.equal(informational.regions[0].reason, 'missing-selector');
+});
+
+test('motion comparison preserves duplicate-aware state and transform evidence', () => {
+  const source = {
+    routes: [{ route: '/home', observations: [{
+      key: '/home|button:nth-child(1)|0',
+      identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Open', occurrence: 0 },
+      declared: { animationName: 'none', transitionProperty: 'transform' },
+      state: { 'data-state': 'closed' },
+      rendered: { transform: 'matrix(1,0,0,1,0,0)', opacity: '1', visibility: 'visible' },
+    }] }],
+  };
+  const clone = {
+    routes: [{ route: '/home', observations: [{
+      key: '/home|button:nth-child(1)|0',
+      identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Open', occurrence: 0 },
+      declared: { animationName: 'none', transitionProperty: 'transform' },
+      state: { 'data-state': 'open' },
+      rendered: { transform: 'matrix(0,-1,1,0,0,0)', opacity: '1', visibility: 'visible' },
+    }] }],
+  };
+  const report = compareMotionObservations(source, clone, '20260914T000040Z_source_40404040', '20260914T000041Z_clone_41414141');
+  assert.equal(report.coverage.complete, true);
+  assert.equal(report.findings.some((finding) => finding.category === 'motion-state-mismatch'), true);
+  assert.equal(report.findings.some((finding) => finding.category === 'motion-transform-mismatch'), true);
+  assert.equal(report.findings[0].evidence.source.runId, '20260914T000040Z_source_40404040');
+  assert.equal(report.findings[0].evidence.source.locator, '#/routes/0/observations/0');
+});
+
+test('motion presence coverage supports missing-subject repair', () => {
+  const source = { routes: [{ route: '/home', observations: [{ key: 'toggle', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: {}, state: {}, rendered: {} }] }] };
+  const missing = compareMotionObservations(source, { routes: [{ route: '/home', observations: [] }] }, '20260914T000050Z_source_50505050', '20260914T000051Z_clone_51515151');
+  assert.equal(missing.coverage.complete, false);
+  const repaired = compareMotionObservations(source, source, '20260914T000050Z_source_50505050', '20260914T000052Z_clone_52525252');
+  assert.ok(repaired.comparatorCoverage.some((entry) => entry.comparator.dimension === 'presence' && entry.complete));
+});
+
+test('motion evidence locators preserve route identity', () => {
+  const observation = (key, transitionProperty) => ({ key, identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty }, state: {}, rendered: {} });
+  const source = { routes: [{ route: '/one', observations: [observation('/one|button|Toggle||0', 'transform')] }, { route: '/two', observations: [observation('/two|button|Toggle||0', 'transform')] }] };
+  const clone = { routes: [{ route: '/one', observations: [observation('/one|button|Toggle||0', 'transform')] }, { route: '/two', observations: [observation('/two|button|Toggle||0', 'opacity')] }] };
+  const report = compareMotionObservations(source, clone, '20260914T000060Z_source_60606060', '20260914T000061Z_clone_61616161');
+  const finding = report.findings.find((entry) => entry.category === 'motion-declared-mismatch');
+  assert.equal(finding.evidence.source.locator, '#/routes/1/observations/0');
+  assert.equal(finding.evidence.clone.locator, '#/routes/1/observations/0');
+});
+
+test('motion finding identity ignores diagnostic path changes', () => {
+  const finding = {
+    category: 'motion-declared-mismatch',
+    comparator: { instrument: 'motion', evidenceClass: 'motion', dimension: 'declared', mode: 'gate' },
+    subject: { route: '/home', path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', motionId: 'toggle', occurrence: 0 },
+    policy: { dimension: 'declared', mode: 'gate' },
+    comparison: { sourceKind: 'source', cloneKind: 'clone' },
+  };
+  assert.equal(stableFindingId(finding), stableFindingId({ ...finding, subject: { ...finding.subject, path: 'main>section:nth-child(2)>button:nth-child(1)' } }));
 });
 
 test('source actions require an explicit policy allowance', () => {

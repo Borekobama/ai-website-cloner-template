@@ -14,6 +14,7 @@ import { classifyControl } from './audits/dead-controls.mjs';
 import { evaluateAction, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
 import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual-regions.mjs';
+import { compareMotionObservations } from './motion.mjs';
 import { PNG } from 'pngjs';
 
 let running;
@@ -56,6 +57,13 @@ export async function runSelfTests() {
     const image = new PNG({ width: 1, height: 1 });
     image.data[3] = 255;
     assert.equal(compareVisualRegionImages(PNG.sync.write(image), PNG.sync.write(image)).equal, true);
+    const motion = compareMotionObservations(
+      { routes: [{ route: '/home', observations: [{ key: '/home|button:nth-child(1)|0', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty: 'transform' }, state: { 'data-state': 'closed' }, rendered: { transform: 'matrix(1, 0, 0, 1, 0, 0)' } }] }] },
+      { routes: [{ route: '/home', observations: [{ key: '/home|button:nth-child(1)|0', identity: { path: 'main>button:nth-child(1)', role: 'button', name: 'Toggle', occurrence: 0 }, declared: { transitionProperty: 'opacity' }, state: { 'data-state': 'closed' }, rendered: { transform: 'matrix(1, 0, 0, 1, 0, 0)' } }] }] },
+      '20260913T000001Z_source_a1b2c3d4',
+      '20260913T000002Z_clone_b1c2d3e4',
+    );
+    assert.ok(motion.findings.some((finding) => finding.category === 'motion-declared-mismatch'));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

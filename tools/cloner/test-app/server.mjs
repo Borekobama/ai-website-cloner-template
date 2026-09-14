@@ -7,6 +7,13 @@ const COMMON_CSS = `
   .fixture-control { border: 1px solid #777; padding: 0.35rem 0.6rem; }
   .readable-runtime { color: seagreen; }
   .toggle-on { background: lightgreen; }
+  .motion-toggle { transition: transform 120ms ease; }
+  .motion-toggle[data-state="open"] { transform: rotate(90deg); }
+  .motion-v4 { transform: none; rotate: 0deg; }
+  .motion-v4[data-state="open"] { transform: none; rotate: 90deg; }
+  @keyframes fixture-pulse { from { opacity: 0.6; } to { opacity: 1; } }
+  .motion-sampled { animation: fixture-pulse 1s infinite; }
+  .motion-defect { transition-property: opacity; }
   .overlay { border: 2px solid #345; margin-top: 1rem; padding: 1rem; }
   .added-item { color: #345; }
   .noise-value { color: #666; }
@@ -44,6 +51,7 @@ function pageDocument({ route, mode, repaired, port }) {
     ${cloneNeedsRepair ? '' : `toggle?.addEventListener('click', () => {
       const active = toggle.getAttribute('aria-pressed') !== 'true';
       toggle.setAttribute('aria-pressed', String(active));
+      toggle.setAttribute('data-state', active ? 'open' : 'closed');
       toggle.classList.toggle('toggle-on', active);
     });`}
     const overlayControl = document.querySelector('[data-action="overlay"]');
@@ -62,7 +70,7 @@ function pageDocument({ route, mode, repaired, port }) {
       <p class="readable-runtime">Readable stylesheet runtime class.</p>
       <div class="toolbar">
         ${moreControls}
-        <button class="fixture-control" data-control-class="toggle" data-action="toggle" aria-label="Toggle" aria-pressed="false">Toggle</button>
+        <button class="fixture-control motion-toggle motion-sampled${isClone ? ' motion-v4' : ''}${cloneNeedsRepair ? ' motion-defect' : ''}" data-control-class="toggle" data-action="toggle" data-state="closed" aria-label="Toggle" aria-pressed="false">Toggle</button>
         <button class="fixture-control" data-control-class="dead" aria-label="Dead button">Dead button</button>
         <button class="fixture-control" data-control-class="overlay-trigger" data-action="overlay" aria-label="Open overlay">Open overlay</button>
         <button class="fixture-control" data-control-class="dom-trigger" data-action="dom" aria-label="Add item">Add item</button>

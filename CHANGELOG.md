@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-14
+
+### Added
+- Motion and state parity evidence for declared animation/transition fields, state attributes, canonical transforms, and optional deterministic Web Animations API samples
+
 ## [0.6.0] - 2026-09-14
 
 ### Added

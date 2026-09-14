@@ -19,6 +19,7 @@ import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { redactForPersistence, safeUrl } from './redact.mjs';
 import { normalizePolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
+import { captureMotion } from './motion.mjs';
 import { captureVisualRegions, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
@@ -360,6 +361,8 @@ export async function measureTarget({
   inventoryRunId = null,
   authoritativeInventory = false,
   visualConfig = null,
+  motion = false,
+  motionSample = false,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -426,6 +429,7 @@ export async function measureTarget({
     const classObservations = [];
     const requestsByRoute = [];
     const visualObservations = [];
+    const motionObservations = [];
     const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
     for (const [routeIndex, route] of requestedRoutes.entries()) {
       const tracker = createRequestTracker(page);
@@ -471,6 +475,9 @@ export async function measureTarget({
         const visual = normalizedVisualConfig
           ? await captureVisualRegions(page, { config: normalizedVisualConfig, target, route })
           : null;
+        const motionObservation = motion
+          ? await captureMotion(page, { route, sample: motionSample })
+          : null;
         const requestRecord = { route, requests: [...tracker.statuses], failures: [...tracker.failures] };
         const routeRecord = {
           route,
@@ -498,6 +505,10 @@ export async function measureTarget({
           }
           writeArtifact(root, siteKey, runId, `measurements/visual-regions/${artifactKey}.json`, visualRecord, { kind: 'visual-region-observation', visibility: 'private' });
           visualObservations.push(visualRecord);
+        }
+        if (motionObservation) {
+          writeArtifact(root, siteKey, runId, `measurements/motion/${artifactKey}.json`, motionObservation, { kind: 'motion-observation' });
+          motionObservations.push(motionObservation);
         }
         controls.push(...routeControls);
         classObservations.push(routeClasses);
@@ -575,6 +586,15 @@ export async function measureTarget({
         complete: visualObservations.length === visualRoutes.size && visualObservations.every((entry) => entry.complete),
       }, { kind: 'visual-region-observation', visibility: 'private' });
     }
+    if (motion) {
+      writeArtifact(root, siteKey, runId, 'measurements/motion.json', {
+        schemaVersion: 1,
+        kind: 'motion-observation',
+        sampled: motionSample,
+        routes: motionObservations,
+        complete: motionObservations.length === routeRecords.length,
+      }, { kind: 'motion-observation' });
+    }
     const inventory = inventoryContext
       ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
       : authoritativeInventory
@@ -599,6 +619,11 @@ export async function measureTarget({
           visualRegionsConfigured: normalizedVisualConfig.regions.length,
           visualRoutesCaptured: visualObservations.length,
           visualCoverageComplete: visualObservations.length === visualRoutes.size && visualObservations.every((entry) => entry.complete),
+        } : {}),
+        ...(motion ? {
+          motionRoutesCaptured: motionObservations.length,
+          motionCoverageComplete: motionObservations.length === routeRecords.length,
+          motionSampled: motionSample,
         } : {}),
       },
       scope: inventoryScope,
