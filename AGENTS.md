@@ -70,7 +70,7 @@ scripts/            # Asset download scripts
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
 
-## Parity workflow (v0.7.0)
+## Parity workflow (v0.8.0)
 
 The repository-owned parity spine lives under `tools/cloner/` and is invoked
 with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,
@@ -112,7 +112,8 @@ Machine measurements are evidence. Component specifications remain derived
 builder contracts for the reconstruction workflow and do not override an
 immutable measurement. Region-scoped visual evidence compares configured
 regions only. Motion/state evidence compares declared motion, state, and
-canonical transforms. Screenshot artifacts stay private by default. A clone is reported
+canonical transforms. DOMSnapshot evidence is Chromium-only and private by
+default. Screenshot artifacts stay private by default. A clone is reported
 with a parity milestone, run IDs, coverage, findings, exceptions and known gaps
 so it can be revisited later.
 

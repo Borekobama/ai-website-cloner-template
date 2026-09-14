@@ -11,7 +11,7 @@ import { startFixtureServer } from './test-app/server.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const CLI = join(ROOT, 'tools', 'cloner', 'cli.mjs');
-const SITE = 'fixture.local-0.7';
+const SITE = 'fixture.local-0.8';
 const ROUTES = ['/home', '/noise', '/incomplete-css', '/destination'];
 
 function runCli(root, args) {
@@ -110,12 +110,14 @@ async function main() {
     assert.notEqual(unverified.code, 0, 'unverified hydration route must fail clone measurement');
     assert.match(unverified.stderr, /Clone runtime is not hydrated on \/unverified-hydration; evidence=unverified/);
 
-    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', '--visual-regions', visualConfigPath, '--motion-sample']);
-    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', '--visual-regions', visualConfigPath, '--motion-sample']);
+    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
+    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
     const sourceRun = sourceMeasurement.runId;
     const cloneRun = cloneMeasurement.runId;
     assert.match(sourceRun, /^\d{8}T\d{6}Z_source_[a-f0-9]{8}$/);
     assert.match(cloneRun, /^\d{8}T\d{6}Z_clone_[a-f0-9]{8}$/);
+    assert.equal(sourceMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
+    assert.equal(cloneMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
 
     const sourceAudit = await audit(parityRoot, policyPath, 'source', sourceRun, ['--profile', profile]);
     const sourceClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'source', '--run', sourceRun, ...commonArgs(parityRoot, policyPath)]);
@@ -134,6 +136,7 @@ async function main() {
       ...commonArgs(parityRoot, policyPath),
     ]);
     assert.equal(initialDiff.code, 0, initialDiff.stderr);
+    assert.equal(initialDiff.json.domSnapshotCoverage.complete, true);
     const initialCategories = new Set(initialDiff.json.findings.map((finding) => finding.category));
     const initialFindingIds = new Set(initialDiff.json.findings.map((finding) => stableFindingId({
       ...finding,
@@ -174,7 +177,8 @@ async function main() {
 
     await clone.close();
     clone = await startFixtureServer({ mode: 'clone', repaired: true });
-    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath, '--motion-sample']);
+    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
+    assert.equal(repairedMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
     const repairedAudit = await audit(parityRoot, policyPath, 'clone', repairedMeasurement.runId);
     const repairedClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'clone', '--run', repairedMeasurement.runId, ...commonArgs(parityRoot, policyPath)]);
     assert.equal(repairedClasses.code, 0, repairedClasses.stderr);

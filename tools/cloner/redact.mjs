@@ -8,26 +8,55 @@ const CREDENTIAL_HEADER = /\b(authorization|proxy-authorization|cookie|set-cooki
 const AUTH_SCHEME = /\b(Bearer|Basic)\s+[^\s,;]+/giu;
 const CREDENTIAL_ASSIGNMENT = /\b(access[-_]?token|refresh[-_]?token|id[-_]?token|token|client[-_]?secret|session(?:[-_]?id)?|csrf(?:[-_]?token)?|password|secret|signature|sig)\s*[:=]\s*(?!\[REDACTED\]|%5BREDACTED%5D)[^\s&;,]+/giu;
 
+const RELATIVE_REFERENCE = /^[^\s"'<>()[\]{}]*[?#][^\s"'<>()[\]{}]*$/u;
+
+function redactHash(value) {
+  if (!value) return value;
+  const raw = value.slice(1);
+  const query = raw.startsWith('?') ? raw.slice(1) : raw;
+  const params = new URLSearchParams(query);
+  let changed = false;
+  for (const key of [...params.keys()]) {
+    if (SENSITIVE_QUERY.test(key)) {
+      params.set(key, '[REDACTED]');
+      changed = true;
+    }
+  }
+  if (changed) return '#' + (raw.startsWith('?') ? '?' : '') + params.toString();
+  return /(?:auth|key|secret|session|token)=/iu.test(raw) ? '#[REDACTED]' : value;
+}
+
 function redactUrl(value) {
   let parsed;
+  let relative = false;
   try {
     parsed = new URL(value);
   } catch {
-    return value;
+    try {
+      parsed = new URL(value, 'https://cloner.invalid');
+      relative = true;
+    } catch {
+      return value;
+    }
   }
   if (PAYMENT_HOST.test(parsed.hostname) && PAYMENT_PATH.test(parsed.pathname)) return '[REDACTED_URL]';
   for (const key of [...parsed.searchParams.keys()]) {
     if (SENSITIVE_QUERY.test(key)) parsed.searchParams.set(key, '[REDACTED]');
   }
-  if (parsed.hash && /(?:token|auth|session|secret)/iu.test(parsed.hash)) parsed.hash = '#[REDACTED]';
-  return parsed.toString();
+  parsed.hash = redactHash(parsed.hash);
+  if (!relative) return parsed.toString();
+  const marker = value.search(/[?#]/u);
+  return (marker >= 0 ? value.slice(0, marker) : parsed.pathname) + parsed.search + parsed.hash;
 }
 
 export function redactString(value) {
   if (typeof value !== 'string') return value;
   if (PROFILE_PATH.test(value)) return '[REDACTED_PROFILE_PATH]';
   const urlPattern = /https?:\/\/[^\s"'<>]+/giu;
-  return value
+  const relativeUrl = RELATIVE_REFERENCE.test(value)
+    ? redactUrl(value)
+    : value;
+  return relativeUrl
     .replace(urlPattern, (url) => redactUrl(url))
     .replace(CREDENTIAL_HEADER, '$1: [REDACTED]')
     .replace(AUTH_SCHEME, '$1 [REDACTED]')

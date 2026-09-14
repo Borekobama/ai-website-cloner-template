@@ -223,7 +223,7 @@ confident parity findings.
 The common measurement envelope is small and kind-specific. Initial supported
 kinds are route inventory, control observations, route-scoped runtime classes,
 compiled CSS classes, coverage, motion/state evidence, region-scoped visual
-evidence, and the two audits. Preserve per-route
+evidence, Chromium DOMSnapshot evidence, and the two audits. Preserve per-route
 provenance before aggregating class observations; one route's development CSS
 cannot represent another route.
 
@@ -278,6 +278,10 @@ Pass `--motion` to both measurements when reviewing declared transitions,
 animations, state attributes, and canonical rendered transforms. Add
 `--motion-sample` when deterministic Web Animations API samples are needed.
 Declared motion/state mismatches are parity gates. Samples remain informational.
+
+Pass `--dom-snapshot` when complete Chromium DOM/layout evidence is needed.
+DOMSnapshot artifacts are private, per-route, redacted before persistence, and
+not global completion gates.
 
 Visual regions are explicit evidence modules. Compare only configured regions;
 never use a whole-page pixel score. Keep screenshot evidence private by default.

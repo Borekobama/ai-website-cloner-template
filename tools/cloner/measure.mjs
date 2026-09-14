@@ -20,6 +20,7 @@ import { redactForPersistence, safeUrl } from './redact.mjs';
 import { normalizePolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
 import { captureMotion } from './motion.mjs';
+import { captureDomSnapshot } from './dom-snapshot.mjs';
 import { captureVisualRegions, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
@@ -363,6 +364,7 @@ export async function measureTarget({
   visualConfig = null,
   motion = false,
   motionSample = false,
+  domSnapshot = false,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -430,6 +432,7 @@ export async function measureTarget({
     const requestsByRoute = [];
     const visualObservations = [];
     const motionObservations = [];
+    const domSnapshotObservations = [];
     const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
     for (const [routeIndex, route] of requestedRoutes.entries()) {
       const tracker = createRequestTracker(page);
@@ -478,6 +481,9 @@ export async function measureTarget({
         const motionObservation = motion
           ? await captureMotion(page, { route, sample: motionSample })
           : null;
+        const domSnapshotObservation = domSnapshot
+          ? await captureDomSnapshot(page, { route })
+          : null;
         const requestRecord = { route, requests: [...tracker.statuses], failures: [...tracker.failures] };
         const routeRecord = {
           route,
@@ -509,6 +515,17 @@ export async function measureTarget({
         if (motionObservation) {
           writeArtifact(root, siteKey, runId, `measurements/motion/${artifactKey}.json`, motionObservation, { kind: 'motion-observation' });
           motionObservations.push(motionObservation);
+        }
+        if (domSnapshotObservation) {
+          const artifactPath = `measurements/dom-snapshots/${artifactKey}.json`;
+          writeArtifact(root, siteKey, runId, artifactPath, domSnapshotObservation, { kind: 'dom-snapshot-observation', visibility: 'private' });
+          domSnapshotObservations.push({
+            route: domSnapshotObservation.route,
+            url: domSnapshotObservation.url,
+            summary: domSnapshotObservation.summary,
+            fingerprint: domSnapshotObservation.fingerprint,
+            artifactPath,
+          });
         }
         controls.push(...routeControls);
         classObservations.push(routeClasses);
@@ -595,6 +612,14 @@ export async function measureTarget({
         complete: motionObservations.length === routeRecords.length,
       }, { kind: 'motion-observation' });
     }
+    if (domSnapshot) {
+      writeArtifact(root, siteKey, runId, 'measurements/dom-snapshots.json', {
+        schemaVersion: 1,
+        kind: 'dom-snapshot-observation',
+        routes: domSnapshotObservations,
+        complete: domSnapshotObservations.length === routeRecords.length,
+      }, { kind: 'dom-snapshot-observation', visibility: 'private' });
+    }
     const inventory = inventoryContext
       ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
       : authoritativeInventory
@@ -624,6 +649,10 @@ export async function measureTarget({
           motionRoutesCaptured: motionObservations.length,
           motionCoverageComplete: motionObservations.length === routeRecords.length,
           motionSampled: motionSample,
+        } : {}),
+        ...(domSnapshot ? {
+          domSnapshotRoutesCaptured: domSnapshotObservations.length,
+          domSnapshotCoverageComplete: domSnapshotObservations.length === routeRecords.length,
         } : {}),
       },
       scope: inventoryScope,

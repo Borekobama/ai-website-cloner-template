@@ -15,13 +15,15 @@ import { evaluateAction, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
 import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual-regions.mjs';
 import { compareMotionObservations } from './motion.mjs';
+import { captureDomSnapshot, domSnapshotCoverage } from './dom-snapshot.mjs';
 import { PNG } from 'pngjs';
+import { canonicalJson, sha256 } from './run-store.mjs';
 
 let running;
 
 export async function runSelfTests() {
   if (running) return running;
-  running = Promise.resolve().then(() => {
+  running = Promise.resolve().then(async () => {
     assert.equal(redactForPersistence({ Authorization: 'Bearer secret', nested: 'https://example.test/x?access_token=secret' }).Authorization, '[REDACTED]');
     assert.equal(containsSensitiveMaterial(redactForPersistence({ Cookie: 'session=secret' })), false);
     assert.equal(containsSensitiveMaterial(redactForPersistence({ url: 'https://stripe.test/checkout/session?client_secret=secret' })), false);
@@ -64,6 +66,53 @@ export async function runSelfTests() {
       '20260913T000002Z_clone_b1c2d3e4',
     );
     assert.ok(motion.findings.some((finding) => finding.category === 'motion-declared-mismatch'));
+    let snapshotCommand;
+    const domSnapshot = await captureDomSnapshot({
+      url: () => 'https://fixture.test/home?token=secret',
+      context: () => ({
+        newCDPSession: async () => ({
+          send: async (method, params) => {
+            snapshotCommand = { method, params };
+            return {
+              strings: [
+                'INPUT', 'password', 'opaque-value', 'type',
+                'value', 'visible-secret', '/next?auth=opaque-auth&token=opaque-token&key=opaque-key',
+               'https://fixture.test/next?auth=opaque-auth&token=opaque-token&key=opaque-key',
+                'next?auth=bare-auth&key=bare-key', '?auth=query-auth&key=query-key', '#auth=hash-auth&key=hash-key',
+              ],
+              documents: [{
+                nodes: {
+                  nodeName: [0, 0],
+                  inputValue: { index: [0, 1], value: [2, 5] },
+                  attributes: [[3, 1, 4, 5, 6, 7], [3, 1, 4, 5, 6, 7]],
+                },
+                layout: { nodeIndex: [0, 1] },
+              }],
+            };
+          },
+          detach: async () => {},
+        }),
+      }),
+    }, { route: '/home' });
+    assert.equal(snapshotCommand.method, 'DOMSnapshot.captureSnapshot');
+    assert.equal(snapshotCommand.params.includeDOMRects, true);
+    assert.equal(domSnapshot.summary.nodes, 2);
+    assert.equal(domSnapshot.url, 'https://fixture.test/home?token=%5BREDACTED%5D');
+    assert.deepEqual(domSnapshot.snapshot.documents[0].nodes.inputValue, { index: [0, 1], value: [2, 5] });
+    assert.equal(domSnapshot.snapshot.strings[2], '[REDACTED]');
+    assert.equal(domSnapshot.snapshot.strings[5], '[REDACTED]');
+    assert.equal(domSnapshot.snapshot.strings[6], '/next?auth=%5BREDACTED%5D&token=%5BREDACTED%5D&key=%5BREDACTED%5D');
+   assert.equal(domSnapshot.snapshot.strings[7], 'https://fixture.test/next?auth=%5BREDACTED%5D&token=%5BREDACTED%5D&key=%5BREDACTED%5D');
+    assert.equal(domSnapshot.snapshot.strings[8], 'next?auth=%5BREDACTED%5D&key=%5BREDACTED%5D');
+    assert.equal(domSnapshot.snapshot.strings[9], '?auth=%5BREDACTED%5D&key=%5BREDACTED%5D');
+    assert.equal(domSnapshot.snapshot.strings[10], '#auth=%5BREDACTED%5D&key=%5BREDACTED%5D');
+    assert.equal(domSnapshot.snapshot.strings.includes('opaque-value'), false);
+    const { capturedAt, fingerprint, ...fingerprintInput } = domSnapshot;
+    assert.ok(capturedAt);
+    assert.equal(fingerprint, sha256(canonicalJson(fingerprintInput)));
+    const incompleteDomCoverage = domSnapshotCoverage({ complete: true, routes: [{ route: '/home' }] }, ['/home', '/billing']);
+    assert.equal(incompleteDomCoverage.complete, false);
+    assert.deepEqual(incompleteDomCoverage.missingRoutes, ['/billing']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
