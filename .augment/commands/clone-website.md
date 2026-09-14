@@ -10,12 +10,16 @@ argument-hint: "<url1> [<url2> ...]"
 
 Reverse-engineer **$ARGUMENTS** into the current Next.js application. Preserve
 the target routes and produce a faithful, runnable clone. The workflow has two
-modes:
+modes, with an automatic capability check:
 
 - **Bootstrap**: inspect a target with no established clone provenance, build
   the page, then create the first source and clone parity runs.
 - **Revisit**: for an existing source↔clone relationship, resolve its earlier
   run history, measure both sides again, audit, diff, repair, and re-measure.
+
+If the current repository has the cloner CLI, run the full parity workflow. If
+it does not, continue bootstrap or extraction work without pretending that
+parity evidence exists. Report the result as `extraction-only`.
 
 The initial clone is a reconstruction workflow. Parity measurements are the
 machine evidence for later repair. A Markdown component spec is a derived
@@ -35,9 +39,12 @@ Explicit user instructions override these defaults.
 
 ## Non-negotiable boundaries
 
-- Use the repository-owned Playwright path for authoritative measurements:
-  `npm run cloner -- help`. Browser MCP remains useful for exploratory
-  reconnaissance and screenshots.
+- Detect the repository-owned parity CLI before measurement:
+  `npm run cloner -- help`. Use it as the authoritative measurement path when
+  available. If the script or `tools/cloner/` is missing, do not install or
+  copy a large runtime silently. Use Browser MCP or the repository's existing
+  Playwright tests for reconnaissance/build verification, and label the result
+  `extraction-only` with parity evidence unavailable.
 - Use Playwright as the only new browser dependency. Do not add Crawlee,
   Firecrawl, SingleFile, rrweb, broad crawler abstractions, or speculative
   audit frameworks.
@@ -81,6 +88,26 @@ immutable. `current` is only a convenience ref; resolve it immediately and
 write concrete run IDs into reports, findings, and later operations. A subset
 run must identify its inventory provenance and can never replace a broader
 run.
+
+### Capability detection
+
+Run this before parity commands:
+
+```bash
+node -e 'const p=require("./package.json"); if (!p.scripts?.cloner) process.exit(1)'
+test -f tools/cloner/cli.mjs
+```
+
+When either check fails, skip `measure`, `audit`, `diff`, and `findings` CLI
+commands. Do not add `tools/cloner/` or change package scripts unless the user
+explicitly requests full parity support in that repository. Continue the
+requested clone using available browser and test tooling, then report:
+
+```text
+mode: extraction-only
+parity CLI: unavailable
+immutable parity evidence: not produced
+```
 
 ## Bootstrap and revisit preflight
 
@@ -186,7 +213,8 @@ transitions, and overlays.
 
 ## Parity measurement and audits
 
-After bootstrap assembly, or during every revisit:
+When capability detection passes, after bootstrap assembly or during every
+revisit:
 
 ```bash
 npm run cloner -- measure --target source --url <source-origin> --site <site-key> --profile .cloner-profiles/primary --routes <route,...> --inventory
@@ -201,6 +229,10 @@ npm run cloner -- audit dead-classes --site <site-key> --target clone --run "$CL
 npm run cloner -- diff --site <site-key> --source "$SOURCE_RUN" --clone "$CLONE_RUN" --source-audit "$SOURCE_AUDIT" --clone-audit "$CLONE_AUDIT"
 npm run cloner -- findings --site <site-key>
 ```
+
+When capability detection fails, do not run these commands. Complete the clone
+or component extraction with available browser/test tooling and include the
+extraction-only status in the completion report.
 
 Use `--inventory` only when the requested route list intentionally defines the
 authoritative denominator for that source or clone. A measurement without it is
@@ -306,6 +338,7 @@ prose-only counts into fixture expectations.
 Report an initial parity milestone, not an irreversible “complete” state. The
 handoff includes:
 
+- execution mode: `parity` or `extraction-only`;
 - source URL to destination route mapping and routes preserved;
 - concrete source, clone, audit, and diff run IDs;
 - repository commit and dirty-state identity for each run;
