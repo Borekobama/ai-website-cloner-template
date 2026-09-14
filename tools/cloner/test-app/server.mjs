@@ -17,6 +17,8 @@ const COMMON_CSS = `
   .added-item { color: #345; }
   .noise-value { color: #666; }
   .clone-visual-defect { border: 3px solid crimson; padding: 0.5rem; }
+  @media (min-width: 1024px) { .responsive-media-marker { outline: 1px solid seagreen; } }
+  @container shell (min-width: 600px) { .responsive-container-marker { color: seagreen; } }
 `;
 
 function pageDocument({ route, mode, repaired, port }) {
@@ -81,6 +83,8 @@ function pageDocument({ route, mode, repaired, port }) {
     </main>
   ` : route === '/noise' ? `
     <main class="page-shell"><h1>Noisy timer</h1><p class="noise-value" id="noise-value">0</p><div data-control-region="noise-dead"><button class="fixture-control" data-control-class="dead" aria-label="Noisy dead button">Noisy dead button</button></div></main>
+  ` : route === '/responsive' ? `
+    <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p></main>
   ` : route === '/incomplete-css' ? `
     <main class="page-shell"><h1>Incomplete CSS</h1><p class="incomplete-runtime">Cross-origin stylesheet candidate.</p></main>
   ` : route === '/broken-hydration' ? `
@@ -127,7 +131,7 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       response.end('.incomplete-runtime { color: darkorange; }');
       return;
     }
-    const allowed = new Set(['/home', '/noise', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination']);
+    const allowed = new Set(['/home', '/noise', '/responsive', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination']);
     if (!allowed.has(requestUrl.pathname)) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       response.end('Not found');

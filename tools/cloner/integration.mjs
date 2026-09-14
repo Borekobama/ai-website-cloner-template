@@ -11,7 +11,7 @@ import { startFixtureServer } from './test-app/server.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const CLI = join(ROOT, 'tools', 'cloner', 'cli.mjs');
-const SITE = 'fixture.local-0.8';
+const SITE = 'fixture.local-0.9';
 const ROUTES = ['/home', '/noise', '/incomplete-css', '/destination'];
 
 function runCli(root, args) {
@@ -188,6 +188,26 @@ async function main() {
     ]);
     assert.equal(repairedDiff.code, 0, repairedDiff.stderr);
     assert.deepEqual(repairedDiff.json.findings, [], 'repaired clone should close all parity findings');
+
+    const responsiveSourceMeasurement = await runCli(parityRoot, [
+      'measure', '--target', 'source', '--url', source.url, '--routes', '/responsive', '--profile', profile, '--inventory', '--responsive',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(responsiveSourceMeasurement.code, 0, responsiveSourceMeasurement.stderr);
+    const responsiveCloneMeasurement = await runCli(parityRoot, [
+      'measure', '--target', 'clone', '--url', clone.url, '--routes', '/responsive', '--inventory', '--responsive',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(responsiveCloneMeasurement.code, 0, responsiveCloneMeasurement.stderr);
+    assert.equal(responsiveSourceMeasurement.json.coverage.measurement.responsiveCoverageComplete, true);
+    assert.equal(responsiveCloneMeasurement.json.coverage.measurement.responsiveCoverageComplete, true);
+    const responsiveDiff = await runCli(parityRoot, [
+      'diff', '--source', responsiveSourceMeasurement.json.runId, '--clone', responsiveCloneMeasurement.json.runId,
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(responsiveDiff.code, 0, responsiveDiff.stderr);
+    assert.equal(responsiveDiff.json.responsiveCoverage.complete, true);
+    assert.deepEqual(responsiveDiff.json.findings, [], 'matching responsive fixture should produce no responsive findings');
 
     const findings = await runCli(parityRoot, ['findings', ...commonArgs(parityRoot, policyPath)]);
     assert.equal(findings.code, 0, findings.stderr);

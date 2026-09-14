@@ -22,6 +22,7 @@ import { runSelfTests } from './selftest.mjs';
 import { captureMotion } from './motion.mjs';
 import { captureDomSnapshot } from './dom-snapshot.mjs';
 import { captureVisualRegions, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
+import { captureResponsive, responsiveIndexEntry } from './responsive.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
 
@@ -365,6 +366,7 @@ export async function measureTarget({
   motion = false,
   motionSample = false,
   domSnapshot = false,
+  responsive = false,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -433,6 +435,7 @@ export async function measureTarget({
     const visualObservations = [];
     const motionObservations = [];
     const domSnapshotObservations = [];
+    const responsiveObservations = [];
     const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
     for (const [routeIndex, route] of requestedRoutes.entries()) {
       const tracker = createRequestTracker(page);
@@ -484,6 +487,9 @@ export async function measureTarget({
         const domSnapshotObservation = domSnapshot
           ? await captureDomSnapshot(page, { route })
           : null;
+        const responsiveObservation = responsive
+          ? await captureResponsive(page, { route })
+          : null;
         const requestRecord = { route, requests: [...tracker.statuses], failures: [...tracker.failures] };
         const routeRecord = {
           route,
@@ -526,6 +532,11 @@ export async function measureTarget({
             fingerprint: domSnapshotObservation.fingerprint,
             artifactPath,
           });
+        }
+        if (responsiveObservation) {
+          const artifactPath = `measurements/responsive/${artifactKey}.json`;
+          writeArtifact(root, siteKey, runId, artifactPath, responsiveObservation, { kind: 'responsive-observation', visibility: 'private' });
+          responsiveObservations.push({ observation: responsiveObservation, artifactPath });
         }
         controls.push(...routeControls);
         classObservations.push(routeClasses);
@@ -620,6 +631,16 @@ export async function measureTarget({
         complete: domSnapshotObservations.length === routeRecords.length,
       }, { kind: 'dom-snapshot-observation', visibility: 'private' });
     }
+    if (responsive) {
+      const responsiveIndex = {
+        schemaVersion: 1,
+        kind: 'responsive-observation-index',
+        routes: responsiveObservations.map(({ observation, artifactPath }) => responsiveIndexEntry(observation, artifactPath)),
+        complete: responsiveObservations.length === routeRecords.length
+          && responsiveObservations.every(({ observation }) => observation.complete === true),
+      };
+      writeArtifact(root, siteKey, runId, 'measurements/responsive.json', responsiveIndex, { kind: 'responsive-observation-index' });
+    }
     const inventory = inventoryContext
       ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
       : authoritativeInventory
@@ -653,6 +674,18 @@ export async function measureTarget({
         ...(domSnapshot ? {
           domSnapshotRoutesCaptured: domSnapshotObservations.length,
           domSnapshotCoverageComplete: domSnapshotObservations.length === routeRecords.length,
+        } : {}),
+        ...(responsive ? {
+          responsiveRoutesCaptured: responsiveObservations.length,
+          responsiveRoutesComplete: responsiveObservations.filter(({ observation }) => observation.complete === true).length,
+          responsiveProbesExpected: responsiveObservations.reduce((sum, { observation }) => sum + (observation.probeCoverage?.expected ?? 0), 0),
+          responsiveProbesCaptured: responsiveObservations.reduce((sum, { observation }) => sum + (observation.probeCoverage?.captured ?? 0), 0),
+          responsiveProbeFailures: responsiveObservations.reduce((sum, { observation }) => sum + (observation.probeCoverage?.failed ?? 0), 0),
+          responsiveStylesheetsTotal: responsiveObservations.reduce((sum, { observation }) => sum + (observation.stylesheetCoverage?.total ?? 0), 0),
+          responsiveStylesheetsReadable: responsiveObservations.reduce((sum, { observation }) => sum + (observation.stylesheetCoverage?.readable ?? 0), 0),
+          responsiveStylesheetsUnreadable: responsiveObservations.reduce((sum, { observation }) => sum + (observation.stylesheetCoverage?.unreadable ?? 0), 0),
+          responsiveCoverageComplete: responsiveObservations.length === routeRecords.length
+            && responsiveObservations.every(({ observation }) => observation.complete === true),
         } : {}),
       },
       scope: inventoryScope,
