@@ -32,7 +32,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.11.0
+AI Website Cloner parity CLI v0.12.0
 
 Usage:
   npm run cloner -- <command> [options]

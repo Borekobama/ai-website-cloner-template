@@ -581,6 +581,7 @@ export async function measureTarget({
           route: restored.domSnapshot.route,
           url: restored.domSnapshot.url,
           summary: restored.domSnapshot.summary,
+          structure: restored.domSnapshot.structure,
           fingerprint: restored.domSnapshot.fingerprint,
           artifactPath: `measurements/dom-snapshots/${artifactKey}.json`,
         });
@@ -685,6 +686,7 @@ export async function measureTarget({
             route: domSnapshotObservation.route,
             url: domSnapshotObservation.url,
             summary: domSnapshotObservation.summary,
+            structure: domSnapshotObservation.structure,
             fingerprint: domSnapshotObservation.fingerprint,
             artifactPath,
           });

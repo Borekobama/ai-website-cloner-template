@@ -15,7 +15,7 @@ import { evaluateAction, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
 import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual-regions.mjs';
 import { compareMotionObservations } from './motion.mjs';
-import { captureDomSnapshot, domSnapshotCoverage } from './dom-snapshot.mjs';
+import { captureDomSnapshot, compareDomSnapshotStructure, domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareResponsiveEvidence, generateExactPixelProbes, normalizeCssCondition, parseResponsiveCondition, responsiveThresholds } from './responsive.mjs';
 import { compareAssetEvidence } from './assets.mjs';
 import { PNG } from 'pngjs';
@@ -117,6 +117,7 @@ export async function runSelfTests() {
     assert.equal(snapshotCommand.method, 'DOMSnapshot.captureSnapshot');
     assert.equal(snapshotCommand.params.includeDOMRects, true);
     assert.equal(domSnapshot.summary.nodes, 2);
+    assert.equal(domSnapshot.structure.tagCounts.input, 2);
     assert.equal(domSnapshot.url, 'https://fixture.test/home?token=%5BREDACTED%5D');
     assert.deepEqual(domSnapshot.snapshot.documents[0].nodes.inputValue, { index: [0, 1], value: [2, 5] });
     assert.equal(domSnapshot.snapshot.strings[2], '[REDACTED]');
@@ -133,6 +134,14 @@ export async function runSelfTests() {
     const incompleteDomCoverage = domSnapshotCoverage({ complete: true, routes: [{ route: '/home' }] }, ['/home', '/billing']);
     assert.equal(incompleteDomCoverage.complete, false);
     assert.deepEqual(incompleteDomCoverage.missingRoutes, ['/billing']);
+    const structureComparison = compareDomSnapshotStructure(
+      { routes: [{ route: '/home', structure: { elements: 2, maxDepth: 1, layoutNodes: 2, tagCounts: { button: 2 }, roleCounts: {}, componentCounts: {}, repeatedStructures: [], geometryByKind: [] } }] },
+      { routes: [{ route: '/home', structure: { elements: 1, maxDepth: 1, layoutNodes: 1, tagCounts: { button: 1 }, roleCounts: {}, componentCounts: {}, repeatedStructures: [], geometryByKind: [] } }] },
+      '20260913T000007Z_source_a7b7c7d7',
+      '20260913T000008Z_clone_b8c8d8e8',
+    );
+    assert.ok(structureComparison.findings.some((finding) => finding.category === 'dom-structure-mismatch'));
+    assert.equal(structureComparison.coverage.complete, true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

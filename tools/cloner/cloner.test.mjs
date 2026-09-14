@@ -388,7 +388,7 @@ test('resume accepts redacted origins and rejects changed repository identity', 
     runId: '20260914T000009Z_clone_99999999',
     status: 'failed',
     kind: 'clone',
-    engine: { version: '0.11.0' },
+    engine: { version: '0.12.0' },
     target: {
       kind: 'clone',
       origin: 'http://127.0.0.1:3000/',
