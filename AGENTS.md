@@ -68,9 +68,9 @@ scripts/            # Asset download scripts
 ## MOST IMPORTANT NOTES
 - When launching Claude Code agent teams, ALWAYS have each teammate work in their own worktree branch and merge everyone's work at the end, resolving any merge conflicts smartly since you are basically serving the orchestrator role and have full context to our goals, work given, work achieved, and desired outcomes.
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
-- After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
+- After editing `.claude/skills/clone-website/SKILL.md` or any runtime module in `tools/cloner/`, run `node scripts/sync-skills.mjs` to regenerate the platform skills and the portable `skills/clone-website/` bundle.
 
-## Parity workflow (v0.12.1)
+## Parity workflow (v0.13.1)
 
 The repository-owned parity spine lives under `tools/cloner/` and is invoked
 with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,
@@ -116,6 +116,16 @@ canonical transforms. DOMSnapshot evidence is Chromium-only and private by
 default. Screenshot artifacts stay private by default. A clone is reported
 with a parity milestone, run IDs, coverage, findings, exceptions and known gaps
 so it can be revisited later.
+
+Optional v0.13 modules follow the same evidence rules: `--aria` (landmark and
+heading outline), `--head` (indexing metadata, with `--sitemap` as a bounded
+route source), `--performance` (informational load metrics), media-feature
+responsive probes, and visual masks or policy-approved state regions. Every
+route also records runtime errors and a deployment fingerprint; source resume
+and `drift` reuse or re-measure routes by that fingerprint. Each diff's
+`report.html` and the `tokens` and `rights` outputs are derived views, not
+evidence. `audit clone-code` records clone-health findings from the clone's
+TypeScript.
 
 Parity findings identify source-vs-clone mismatches. Clone-health findings
 identify clone implementation-quality observations. Clone-health findings do

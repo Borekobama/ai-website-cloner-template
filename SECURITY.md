@@ -53,7 +53,7 @@ security details in public channels.
 
 ## Browser profiles and parity evidence
 
-The v0.12.1 parity CLI supports persistent Playwright profiles for authenticated
+The v0.13.1 parity CLI supports persistent Playwright profiles for authenticated
 source measurement. Treat `.cloner-profiles/` as a credential store: keep it
 outside commits, backups shared with untrusted users, screenshots, and CI
 artifacts. Prefer a least-privileged account and a tenant/workspace dedicated
@@ -73,4 +73,13 @@ when they are no longer needed.
 Frozen fixtures are private by default under ignored `.cloner-runtime/fixtures/`.
 Promote a fixture into tracked `tools/cloner/fixtures/` only with the explicit
 `fixture freeze --public` option after confirming the persisted evidence is
-appropriate for public source control.
+appropriate for public source control. Public promotion refuses evidence that
+still contains credential-like material, email addresses, JWTs, or phone
+numbers, and leaves screenshots out unless `--include-screenshots` is given.
+The scan cannot recognise every name or address in page text, so review the
+fixture before committing it.
+
+State visual regions and dead-control trials act on a source only after a
+matching safe-action policy allowance. Drift checks and source resume revisit
+source routes with the same persistent profile and fail closed on login
+redirects or authentication forms.

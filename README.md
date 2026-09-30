@@ -132,7 +132,7 @@ flowchart LR
 3. **Component Specs** — writes detailed namespaced spec files (`docs/research/<site-key>/<page-key>/components/`) with exact computed CSS values, states, behaviors, and content
 4. **Parallel Build** — dispatches builder agents in git worktrees, one per section/component
 5. **Assembly & visual QA** — merges worktrees, wires up the page, and compares the clone with the original
-6. **Parity spine** — records immutable source/clone runs, audits dead controls and runtime classes, compares supported measurements, and keeps an append-only findings ledger
+6. **Parity spine** — records immutable source/clone runs, audits dead controls, runtime classes, and clone code, compares supported measurements (including accessibility outline, head metadata, runtime errors, and optional load metrics), writes a browsable `report.html`, and keeps an append-only findings ledger
 
 Parity findings identify source-vs-clone mismatches. Clone-health findings
 identify clone implementation-quality observations. Clone-health findings do
@@ -197,6 +197,7 @@ npm run typecheck # TypeScript check
 npm run check  # Run lint + typecheck + build
 npm run cloner -- help # Exact parity CLI command reference
 npm run test:cloner # Cloner instrument self-tests
+node scripts/sync-skills.mjs # Regenerate platform skills and the portable skills/clone-website bundle
 ```
 
 ### Revisit parity after the initial clone
@@ -232,6 +233,14 @@ measure → audit → diff → ledger repair flow, run:
 ```bash
 npm run test:cloner:integration
 ```
+
+Optional measurement modules add evidence without becoming universal gates:
+`--aria`, `--head` (with `--sitemap` for migrations of sites you own),
+`--performance`, `--responsive` media-feature probes, and visual masks or
+policy-approved state regions. `drift` finds routes whose deployment changed,
+`tokens` drafts design tokens from DOMSnapshot evidence, `audit clone-code`
+checks the clone's TypeScript, and `rights` lists source assets that need a
+licence check before you publish anything.
 
 Every measurement creates a new immutable run at
 `docs/research/<site-key>/_parity/runs/<run-id>/`. For read-side inspection,

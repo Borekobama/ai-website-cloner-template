@@ -1,0 +1,374 @@
+---
+name: clone-website
+description: Reverse-engineer and clone one or more websites in one shot, then measure source↔clone parity with immutable runs.
+argument-hint: "<url1> [<url2> ...]"
+user-invocable: true
+---
+
+# Clone Website
+
+Reverse-engineer **$ARGUMENTS** into the current Next.js application. Preserve
+the target routes and produce a faithful, runnable clone. The workflow has two
+modes:
+
+- **Bootstrap**: inspect a target with no established clone provenance, build
+  the page, then create the first source and clone parity runs.
+- **Revisit**: for an existing source↔clone relationship, resolve its earlier
+  run history, measure both sides again, audit, diff, repair, and re-measure.
+
+This skill bundles a versioned cloner runtime. Its launcher installs pinned Node
+dependencies and Chromium once in the shared Skills Manager cache, then reuses
+that runtime from every repository while writing evidence into the current
+repository.
+
+The initial clone is a reconstruction workflow. Parity measurements are the
+machine evidence for later repair. A Markdown component spec is a derived
+builder contract, not an authoritative measurement source.
+
+For **Bootstrap**, also read
+`references/CLONE_BOOTSTRAP_REFERENCE.md` relative to this skill before
+extraction. It preserves detailed route, asset-discovery, scope-default, and
+Atlas fallback contracts that are intentionally kept out of this shorter skill.
+
+Unless the user says otherwise, bootstrap fidelity is pixel-perfect visual and
+behavioral emulation: exact colors, spacing, typography, responsive behavior,
+and observed animations. Visual layout/styling, component interactions,
+responsive design, and mock/demo data are in scope. Real backend/database,
+authentication, real-time product infrastructure, SEO optimization, and an
+accessibility audit are out of scope. Customization is off during emulation.
+Explicit user instructions override these defaults.
+
+## Non-negotiable boundaries
+
+- Use this skill's bundled `scripts/cloner.mjs` launcher for authoritative
+  measurements. Resolve the launcher relative to the loaded `SKILL.md`; do not
+  require or copy `tools/cloner/` into the target repository.
+- Use Playwright as the only new browser dependency. Do not add Crawlee,
+  Firecrawl, SingleFile, rrweb, broad crawler abstractions, or speculative
+  audit frameworks.
+- DOM snapshots, visual diffing, motion analysis, and other fidelity
+  instruments may be added only as explicit measurement modules. Persist
+  immutable evidence, coverage, comparison semantics, and focused self-tests.
+  Never make them universal completion gates for the workflow.
+- Preserve existing routes, research, screenshots, components, and asset
+  namespaces. A target URL is not permission to replace an existing route.
+- Use real target text and assets. Do not invent content, logos, or brand
+  artwork when an original can be inspected or downloaded.
+- Keep authenticated browser profiles outside commits, normally in
+  `.cloner-profiles/`. Never persist cookies, authorization headers, tokens,
+  payment-session URLs, or profile filesystem paths.
+- Do not interact with an authenticated source until safe-action policy has
+  classified the control. Blocked actions may be checked for existence and
+  reachability, but must not be executed.
+- Run the bundled launcher with `selftest` before trusting a new instrument. If an
+  instrument is discovered to be wrong, freeze the failing run before fixing
+  the instrument.
+
+## CLI command authority
+
+Resolve `<skill-root>` from this loaded `SKILL.md`, then use the shared launcher.
+The launcher installs runtime v0.13.1 once under
+`~/.skills-manager/runtime-cache/clone-website/0.13.1/`. The installed CLI help
+is the version-matched command contract:
+
+```bash
+CLONER_LAUNCHER="<skill-root>/scripts/cloner.mjs"
+node "$CLONER_LAUNCHER" help
+node "$CLONER_LAUNCHER" selftest
+```
+
+The core workflow is:
+
+```text
+measure → immutable run → audit dead-controls/dead-classes → diff → repair → measure again
+```
+
+Every measurement creates a new run under
+`docs/research/<site-key>/_parity/runs/<run-id>/`. A closed or failed run is
+immutable. `current` is only a convenience ref; resolve it immediately and
+write concrete run IDs into reports, findings, and later operations. A subset
+run must identify its inventory provenance and can never replace a broader
+run.
+
+If first-use dependency installation fails, report its exact command and error.
+Continue as `extraction-only` only when the requested clone can still be safely
+completed with available browser/test tooling. Never claim immutable parity
+evidence when the launcher did not run.
+
+## Bootstrap and revisit preflight
+
+Before editing:
+
+1. Read the project instructions and the relevant Next.js guide available under
+   `node_modules/next/dist/docs/`; if the installed package does not ship that
+   directory, rely on the checked-in scaffold and verify all requested checks.
+2. Run `npm run build` and inspect the current App Router routes.
+3. Normalize and validate each URL. Compute a collision-resistant site key from
+   the readable origin plus an origin hash, and a page key from the pathname
+   plus a pathname/state hash. Confirm all route, artifact, screenshot,
+   component, asset, and downloader destinations are unique.
+4. For bootstrap, create the output plan and proceed with reconnaissance. For
+   revisit, inspect the site's `_parity` history and resolve prior concrete run
+   IDs before deciding what needs to be re-measured.
+5. If the destination route already exists, determine whether it is the same
+   source relationship being revisited. Otherwise stop and ask whether to
+   update, choose another route, or skip it.
+
+When a literal pathname segment begins with `_` or `@`, or contains literal
+parentheses or square brackets, use the percent-encoded folder spelling required
+to preserve that literal URL instead of accidentally creating an App Router
+private folder, slot, route group, or dynamic segment. Verify the exact
+normalized URL after build. See the bootstrap reference for the full routing
+contract.
+
+Different origins require separate prepared application roots unless the user
+explicitly approves route-scoped styling in a combined app. Preserve the
+existing multi-page site/page namespace scheme:
+
+```text
+docs/research/<site-key>/<page-key>/
+docs/design-references/<site-key>/<page-key>/
+src/components/sites/<site-key>/<page-key>/
+public/sites/<site-key>/<page-key>/
+```
+
+## Bootstrap reconnaissance
+
+For each target page:
+
+- Take full-page desktop (1440px) and mobile (390px) screenshots; inspect
+  tablet (768px) as well. Save references in the page screenshot namespace.
+- Extract fonts, colors, layout, responsive breakpoints, favicons, metadata,
+  images, videos, inline SVGs, layered backgrounds, and global UI patterns.
+  Enumerate rendered image/currentSrc dimensions and layers, video sources and
+  posters, computed background images, inline/external SVGs, actually used font
+  families/assets, and favicon/icon links. Use local namespaced assets and a
+  uniquely named downloader; use bounded batched downloads with explicit errors.
+- Map the page topology from top to bottom, including fixed/sticky overlays,
+  stacking, scroll containers, and section dependencies.
+- Identify each interaction model before implementing it: static,
+  click-driven, hover-driven, scroll-driven, or time-driven. Do not assume a
+  tab is click-driven; scroll the section first.
+- Perform exploratory scroll, click, hover, and responsive sweeps. For source
+  clicks, safe policy must classify the action first. Capture all states and
+  transitions, not only the default state.
+
+Save behavior and topology findings in the page research namespace, including
+`BEHAVIORS.md` and `PAGE_TOPOLOGY.md`. Keep visual QA as a useful signal, but
+do not call it a permanent completion gate.
+
+## Foundation and construction
+
+Build the shared foundation before page sections:
+
+1. Merge fonts, metadata, global CSS, and route-scoped behavior without
+   breaking existing routes.
+2. Define namespaced TypeScript content interfaces and extract/deduplicate SVG
+   icons into the site shared namespace where appropriate.
+3. Download every rendered asset, including positioned overlays and video
+   posters. Do not substitute a missing distinctive brand asset with generated
+   artwork; report it as missing unless the user explicitly approves a lawful
+   non-identical fallback.
+4. For every section, extract computed styles and content, then write its spec
+   before construction:
+
+```text
+docs/research/<site-key>/<page-key>/components/<component>.spec.md
+```
+
+Each spec includes exact computed styles, DOM structure, interaction model,
+states and transitions, verbatim text, assets, and desktop/tablet/mobile
+behavior. When a spec and immutable measurement disagree, re-check the source
+and measurement; do not silently elevate prose to evidence.
+
+For an unrecoverable non-distinctive visual asset, the optional Atlas path is
+available only under the explicit-user-approval and source-recovery conditions
+in this skill's `references/CLONE_BOOTSTRAP_REFERENCE.md`. Follow its live model catalog,
+schema validation, single-generation-submit, bounded polling, HTTPS-output
+validation, secret-handling, and artifact-manifest contract exactly.
+
+Builders may be specialized by section complexity and may use worktrees when
+the host workflow supports them. Give each builder the full spec inline,
+target file, screenshot, assets, imports, breakpoint behavior, and `npx tsc
+--noEmit` requirement. Merge carefully and run `npm run build` after assembly.
+
+Assemble the exact App Router destination, preserve all pre-existing routes,
+and manually compare source and clone at desktop and mobile. Check responsive
+layout, every allowed interactive state, hover behavior, scroll behavior,
+transitions, and overlays.
+
+## Parity measurement and audits
+
+After bootstrap assembly, or during every revisit:
+
+```bash
+node "$CLONER_LAUNCHER" measure --target source --url <source-origin> --site <site-key> --profile .cloner-profiles/primary --routes <route,...> --inventory
+node "$CLONER_LAUNCHER" measure --target clone --url <clone-origin> --site <site-key> --routes <route,...> --inventory
+SOURCE_RUN=20260914T120000Z_source_0123abcd
+CLONE_RUN=20260914T120100Z_clone_89abcdef
+node "$CLONER_LAUNCHER" audit dead-controls --site <site-key> --target source --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+SOURCE_AUDIT=20260914T120200Z_audit-controls_2345bcde
+node "$CLONER_LAUNCHER" audit dead-controls --site <site-key> --target clone --run "$CLONE_RUN"
+CLONE_AUDIT=20260914T120300Z_audit-controls_3456cdef
+node "$CLONER_LAUNCHER" audit dead-classes --site <site-key> --target clone --run "$CLONE_RUN"
+node "$CLONER_LAUNCHER" diff --site <site-key> --source "$SOURCE_RUN" --clone "$CLONE_RUN" --source-audit "$SOURCE_AUDIT" --clone-audit "$CLONE_AUDIT"
+node "$CLONER_LAUNCHER" findings --site <site-key>
+```
+
+Use `--inventory` only when the requested route list intentionally defines the
+authoritative denominator for that source or clone. A measurement without it is
+`ad-hoc` and cannot advance `current`. Use `--inventory-run <run-id|current>` for
+a subset/re-measurement that must retain an existing authoritative denominator;
+subset and inventory-scope re-measurements never replace the authoritative ref.
+
+Add `--tenant` and `--role` for authenticated source identity checks, and put
+target-specific rules in `parity-exceptions.json`. Source measurement must
+fail closed on unreachable targets, login redirects, and configured tenant/role
+that is mismatched or cannot be verified from explicit page markers. Critical
+document/runtime 401/403 responses fail the run; an unrelated optional request
+does not automatically invalidate the whole authenticated session. Clone
+measurement must fail closed on server errors, missing client chunks, or absent
+explicit/React+Next hydration evidence. A failed precondition keeps evidence
+from routes already completed, records the failed route, and must not create
+confident parity findings.
+
+The common measurement envelope is small and kind-specific. Initial supported
+kinds are route inventory, control observations, route-scoped runtime classes,
+compiled CSS classes, coverage, motion/state evidence, region-scoped visual
+evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot
+evidence, accessibility-tree evidence, head metadata, load metrics, runtime
+errors, deployment fingerprints, and the three audits. Preserve per-route
+provenance before aggregating class observations; one route's development CSS
+cannot represent another route.
+
+The dead-controls audit uses user-like Playwright actionability/trial checks
+and hit testing. Classify disabled, unreachable, blocked-by-policy,
+already-active, navigation, state change, overlay, DOM/style change, network-only effect, and dead
+separately. `DEAD` means an allowed, reachable control was actually exercised
+and produced no expected observable product effect; it does not mean a script
+failed to click. Safe-action policy is decided first: a blocked occurrence is
+recorded from the baseline page and is never opened in a trial. Every allowed
+occurrence trial begins from a fresh baseline browser context, re-locates that
+exact occurrence, observes its effects, and then discards the mutated state.
+Clone trials run up to four at a time (`--trial-concurrency`); source trials
+always run one at a time. Source audits inherit
+the parent measurement's profile label, origin, tenant, role, and expected route
+identity. Each isolated source trial restores storage state (including IndexedDB
+when supported) and re-verifies authentication, exact pathname, tenant, and role
+from explicit markers before acting. Source controls require an explicit
+safe-action policy allowance; unapproved controls remain unexecuted, so their
+behavioral coverage is incomplete. An identity failure is `trial-invalid`, not
+dead or unreachable.
+
+The dead-runtime-class audit compares classes that reached the rendered clone
+with compiled CSS selectors for the same route, then reports route-scoped
+findings and aggregate scope only after the requested sweep completes. Persist
+total/readable/unreadable stylesheet counts and `cssCoverageComplete`; when
+relevant CSS is unreadable, keep the route evidence but do not issue an
+authoritative dead-class finding for that route.
+
+Diff only measurement kinds with explicit semantics. Policy dimensions may be
+`gate`, `informational`, or `ignore`; network differences are commonly ignored
+for mock-backed clones. Do not compare effect signatures as unconditional flat
+equality, and do not treat equal `domChanged` booleans as structural parity.
+Use richer dead-control audit evidence when both sides have it for URL, ARIA,
+structure, overlay, DOM, style and network behavior. Preserve duplicate control
+occurrences. Every finding must cite concrete immutable run IDs and artifact
+locators. Each run persists the normalized policy snapshot used to hash and
+evaluate it; ambiguous equally specific action rules fail closed. Auto-selected
+control audits must match the parent measurement, policy, and covered route
+scope; use explicit `--source-audit`/`--clone-audit` IDs for an intentional
+compatible audit selection. Diff reports persist comparator coverage and selected
+audit IDs/covered routes. Close a prior finding only after the comparator/evidence
+class capable of reproducing it ran again over the same route/control occurrence
+with compatible scope.
+
+For configured invariant visual regions, pass the same versioned configuration to
+source and clone measurements:
+
+```bash
+node "$CLONER_LAUNCHER" measure --target source --url <source-origin> --site <site-key> --routes <route,...> --profile .cloner-profiles/primary --inventory --visual-regions <visual-regions.json> --motion
+node "$CLONER_LAUNCHER" measure --target clone --url <clone-origin> --site <site-key> --routes <route,...> --inventory --visual-regions <visual-regions.json> --motion
+```
+
+Pass `--motion` to both measurements when reviewing declared transitions,
+animations, state attributes, and canonical rendered transforms. Add
+`--motion-sample` when deterministic Web Animations API samples are needed.
+Declared motion/state mismatches are parity gates. Samples remain informational.
+
+Pass `--dom-snapshot` when complete Chromium DOM/layout evidence is needed.
+DOMSnapshot artifacts are private, per-route, redacted before persistence, and
+not global completion gates. Their bounded structural summaries compare tag,
+role, repeated-component, and layout counts. Structural mismatches are parity
+findings; geometry mismatches remain informational.
+
+Visual regions are explicit evidence modules. Compare only configured regions;
+never use a whole-page pixel score. Keep screenshot evidence private by default.
+Missing or ambiguous invariant regions make visual coverage incomplete and cannot
+close an older visual finding. Add `mask` selectors for changing children such
+as clocks or avatars. Add a `state` (`hover`, `focus`, or `click` plus a trigger
+selector) to capture a region after an interaction; it runs on a fresh page and
+only after safe-action policy allows the action.
+
+Pass `--aria` to compare landmark and heading outlines (gate) plus accessible
+names and role counts (informational). Pass `--head` to compare title,
+description, robots, canonical path, language, hreflang, and JSON-LD types
+(gates) plus social previews, icons, viewport, and theme colour
+(informational). For a migration of a site the user owns, `--sitemap` supplies
+a bounded same-origin route list instead of `--routes`. Pass `--performance`
+for informational LCP, CLS, and transfer-byte comparisons, and measure a
+production build when load metrics matter. Every route also records runtime
+errors: clone-only page errors and hydration failures are gates. `--responsive`
+also probes colour scheme, reduced motion, and touch input when stylesheets
+name them.
+
+Every route records a deployment fingerprint. `--resume-run` reuses a source
+route only while its fingerprint still matches, and `drift` reports which routes
+changed since a run so that a revisit re-measures only those with
+`--inventory-run`:
+
+```bash
+node "$CLONER_LAUNCHER" drift --site <site-key> --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+node "$CLONER_LAUNCHER" tokens --site <site-key> --run "$SOURCE_RUN"
+node "$CLONER_LAUNCHER" audit clone-code --site <site-key> --run "$CLONE_RUN"
+node "$CLONER_LAUNCHER" rights --site <site-key> --run "$SOURCE_RUN"
+```
+
+Each `diff` also writes `report.html` beside `report.json`. Use it for review,
+but cite `report.json` and concrete run IDs as evidence. `tokens` drafts design
+tokens from DOMSnapshot evidence for component specs; it is a builder contract,
+not a measurement. `audit clone-code` records clone-health findings for React
+state that is set but never read and for typed registries that disagree.
+`rights` lists source assets that need a licence check; run it before
+publishing a clone of a site the user does not own.
+
+Parity findings identify source-vs-clone mismatches. Clone-health findings
+identify clone implementation-quality observations. Clone-health findings do
+not automatically block a parity milestone when source and clone intentionally
+share a defect.
+
+Findings are append-only events in
+`docs/research/<site-key>/_parity/ledger.jsonl`. `fixture freeze` defaults to
+ignored `.cloner-runtime/fixtures/`; use `--public` only to explicitly promote a
+reviewed fixture into tracked `tools/cloner/fixtures/`. A live baseline is historical evidence, not an
+assumption that the live source remains reproducible. Never turn historical
+prose-only counts into fixture expectations.
+
+## Completion report
+
+Report an initial parity milestone, not an irreversible “complete” state. The
+handoff includes:
+
+- execution mode: `parity` or `extraction-only`;
+- source URL to destination route mapping and routes preserved;
+- concrete source, clone, audit, and diff run IDs;
+- repository commit and dirty-state identity for each run;
+- inventory provenance, requested/completed routes, and measurement coverage;
+- findings, policy exceptions, repair status, and known gaps;
+- the final diff's `report.html` path and the coverage of each optional module;
+- asset rights review status when the user does not own the source site;
+- visual QA results at desktop and mobile;
+- sections/components/specs/assets built and build/typecheck status.
+
+The clone remains revisit-able. After every repair, create a new clone run and
+compare it with the prior concrete runs so old evidence stays inspectable.

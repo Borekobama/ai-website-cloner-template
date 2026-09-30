@@ -19,9 +19,11 @@ const COMMON_CSS = `
   .clone-visual-defect { border: 3px solid crimson; padding: 0.5rem; }
   @media (min-width: 1024px) { .responsive-media-marker { outline: 1px solid seagreen; } }
   @container shell (min-width: 600px) { .responsive-container-marker { color: seagreen; } }
+  @media (prefers-color-scheme: dark) { .responsive-media-marker { color: white; background: black; } }
+  @media (hover: none) { .responsive-hover-marker { display: none; } }
 `;
 
-function pageDocument({ route, mode, repaired, port }) {
+function pageDocument({ route, mode, repaired, port, deployVersion }) {
   const isClone = mode === 'clone';
   const cloneNeedsRepair = isClone && !repaired;
   const extraCloneClass = cloneNeedsRepair ? ' clone-only-runtime' : '';
@@ -79,13 +81,14 @@ function pageDocument({ route, mode, repaired, port }) {
         <a class="fixture-control" data-control-class="navigation" aria-label="Go destination" href="/destination">Go destination</a>
         <button class="fixture-control" data-control-class="destructive" aria-label="Delete account">Delete account</button>
       </div>
+      ${cloneNeedsRepair ? '<h2>Clone-only heading</h2>' : ''}
       <ul id="items"></ul>
       <div id="overlay-root"></div>
     </main>
   ` : route === '/noise' ? `
     <main class="page-shell"><h1>Noisy timer</h1><p class="noise-value" id="noise-value">0</p><div data-control-region="noise-dead"><button class="fixture-control" data-control-class="dead" aria-label="Noisy dead button">Noisy dead button</button><button data-testid="duplicate-destructive-a" class="fixture-control" data-control-class="destructive" aria-label="Duplicate destructive">Duplicate destructive</button><button data-testid="duplicate-destructive-b" class="fixture-control" data-control-class="destructive" aria-label="Duplicate destructive">Duplicate destructive</button></div></main>
   ` : route === '/responsive' ? `
-    <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p></main>
+    <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p><p class="responsive-hover-marker">Hover marker.</p></main>
   ` : route === '/assets' ? `
     <main class="page-shell"><h1>Asset fixture</h1><img src="/fixture.svg" alt="Fixture asset"><img src="/fixture.svg" alt="Repeated fixture asset"><div style="background-image: url('/fixture.svg')">Asset reference.</div></main>
   ` : route === '/incomplete-css' ? `
@@ -101,10 +104,17 @@ function pageDocument({ route, mode, repaired, port }) {
   const hydrationAttribute = route === '/unverified-hydration'
     ? ''
     : ` data-hydrated="${route === '/broken-hydration' ? 'false' : 'true'}"`;
+  const homeHead = route === '/home'
+    ? `<link rel="canonical" href="https://fixture.example/home"><script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Parity fixture"}</script>${cloneNeedsRepair ? '' : '<meta name="description" content="Parity fixture home">'}`
+    : '';
   const noiseScript = route === '/noise' ? `
     let noise = 0;
     setInterval(() => { noise += 1; document.querySelector('#noise-value').textContent = String(noise); }, 25);
+    ${cloneNeedsRepair ? "console.error('Hydration failed because the server rendered HTML did not match the client.');" : ''}
   ` : '';
+  const crashScript = route === '/destination' && cloneNeedsRepair
+    ? "setTimeout(() => { throw new Error('Fixture clone crash'); }, 0);"
+    : '';
   return `<!doctype html>
 <html${hydrationAttribute}>
   <head>
@@ -112,6 +122,8 @@ function pageDocument({ route, mode, repaired, port }) {
     <title>Parity fixture</title>
     <style>${COMMON_CSS}.real-content { content: ".phantom"; background-image: url('/fixture.svg'); }</style>
     ${extraHead}
+    ${homeHead}
+    <script src="/assets/app-${deployVersion}.js"></script>
   </head>
   <body>
     ${body}
@@ -120,12 +132,13 @@ function pageDocument({ route, mode, repaired, port }) {
       window.__next_f.push({ fixture: true });
       ${actionScript}
       ${noiseScript}
+      ${crashScript}
     </script>
   </body>
 </html>`;
 }
 
-export function startFixtureServer({ mode = 'source', repaired = false, host = '0.0.0.0', port = 0 } = {}) {
+export function startFixtureServer({ mode = 'source', repaired = false, host = '0.0.0.0', port = 0, deployVersion = 'a1' } = {}) {
   if (!['source', 'clone'].includes(mode)) throw new Error(`Unsupported fixture mode: ${mode}`);
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -139,6 +152,17 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       response.end('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="seagreen"/></svg>');
       return;
     }
+    if (requestUrl.pathname === `/assets/app-${deployVersion}.js`) {
+      response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(`window.__fixtureApp = ${JSON.stringify(deployVersion)};`);
+      return;
+    }
+    if (requestUrl.pathname === '/sitemap.xml') {
+      const origin = `http://${request.headers.host ?? 'localhost'}`;
+      response.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${origin}/home</loc></url><url><loc>${origin}/destination</loc></url><url><loc>https://elsewhere.example/ignored</loc></url></urlset>`);
+      return;
+    }
     const allowed = new Set(['/home', '/noise', '/responsive', '/assets', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination']);
     if (!allowed.has(requestUrl.pathname)) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -146,7 +170,7 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       return;
     }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    response.end(pageDocument({ route: requestUrl.pathname, mode, repaired, port: server.address()?.port ?? port }));
+    response.end(pageDocument({ route: requestUrl.pathname, mode, repaired, port: server.address()?.port ?? port, deployVersion }));
   });
   return new Promise((resolve, reject) => {
     const onError = (error) => {
@@ -163,6 +187,7 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       resolve({
         mode,
         repaired,
+        deployVersion,
         port: address.port,
         url: `http://127.0.0.1:${address.port}`,
         server,
