@@ -13,7 +13,7 @@ import { appendLedgerEvent, auditFindingCanClose, readLedger, recordFindingStatu
 import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
 import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
 import { captureDomSnapshot } from './dom-snapshot.mjs';
-import { closeRun, createRun, failRun, freezeFixture, readArtifact, readManifest, resolveRunId, setRef, updateRun, writeArtifact } from './run-store.mjs';
+import { closeRun, createRun, ENGINE_VERSION, failRun, freezeFixture, readArtifact, readManifest, resolveRunId, setRef, updateRun, writeArtifact } from './run-store.mjs';
 import { startFixtureServer } from './test-app/server.mjs';
 import { captureVisualRegions, compareVisualRegionImages, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 
@@ -428,7 +428,7 @@ test('resume accepts redacted origins and rejects changed repository identity', 
     runId: '20260914T000009Z_clone_99999999',
     status: 'failed',
     kind: 'clone',
-    engine: { version: '0.12.1' },
+    engine: { version: ENGINE_VERSION },
     target: {
       kind: 'clone',
       origin: 'http://127.0.0.1:3000/',
@@ -457,7 +457,8 @@ test('resume accepts redacted origins and rejects changed repository identity', 
   };
   assert.doesNotThrow(() => assertResumeCompatibility(manifest, compatible));
   assert.throws(() => assertResumeCompatibility(manifest, { ...compatible, repository: { ...manifest.repository, commit: 'def' } }), /repository identity/);
-  assert.throws(() => assertResumeCompatibility({ ...manifest, kind: 'source', target: { ...manifest.target, kind: 'source', profileId: 'profile-a' } }, { ...compatible, target: 'source', profileId: 'profile-a' }), /Source resume is disabled/);
+  // Source routes are reused later only after a matching deployment fingerprint.
+  assert.doesNotThrow(() => assertResumeCompatibility({ ...manifest, kind: 'source', target: { ...manifest.target, kind: 'source', profileId: 'profile-a' } }, { ...compatible, target: 'source', profileId: 'profile-a' }));
 });
 
 test('coverage cannot close without inventory provenance', () => {

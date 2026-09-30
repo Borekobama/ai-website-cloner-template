@@ -10,10 +10,10 @@ import {
 import { createHash, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { redactForPersistence } from './redact.mjs';
+import { containsSensitiveMaterial, findPersonalData, redactForPersistence } from './redact.mjs';
 
 export const RUN_SCHEMA_VERSION = 1;
-export const ENGINE_VERSION = '0.12.1';
+export const ENGINE_VERSION = '0.13.0';
 
 const CONCRETE_RUN_ID = /^[0-9]{8}T[0-9]{6}Z_[a-z0-9-]+_[a-f0-9]{8}$/;
 const REF_NAME = /^(source|clone)-current$/;
@@ -154,7 +154,10 @@ export function createRun({
     runId,
     status: 'open',
     createdAt,
-    engine: { version: engineVersion },
+    engine: {
+      version: engineVersion,
+      ...(process.env.CLONER_ENGINE_SHA256 ? { contentSha256: process.env.CLONER_ENGINE_SHA256 } : {}),
+    },
     kind,
     target,
     repository: repositoryIdentity(root),
@@ -377,19 +380,52 @@ export function listRuns(root = process.cwd(), siteKey) {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-export function freezeFixture(root = process.cwd(), siteKey, runId, name, { publicFixture = false } = {}) {
+// Public fixtures are committed, so they must not carry screenshots by default
+// or any text that still looks like a credential or personal data.
+export function publicFixtureProblems(directory, { includeScreenshots = false } = {}) {
+  const excluded = [];
+  const problems = [];
+  const files = readdirSync(directory, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(directory, join(entry.parentPath, entry.name)).split(sep).join('/'))
+    .sort();
+  for (const path of files) {
+    if (path.endsWith('.png')) {
+      if (!includeScreenshots) excluded.push(path);
+      continue;
+    }
+    const text = readFileSync(join(directory, path), 'utf8');
+    if (containsSensitiveMaterial(text)) problems.push(`${path}: credential-like material`);
+    for (const match of findPersonalData(text)) problems.push(`${path}: ${match.kind} ${match.preview}`);
+  }
+  return { excluded, problems };
+}
+
+export function freezeFixture(root = process.cwd(), siteKey, runId, name, { publicFixture = false, includeScreenshots = false } = {}) {
   assertRunId(runId);
   if (!name || !/^[a-z0-9][a-z0-9._-]*$/i.test(name) || name.includes('..')) throw new Error(`Invalid fixture name: ${name}`);
   const manifest = readManifest(root, siteKey, runId);
   if (!['closed', 'failed'].includes(manifest.status)) {
     throw new Error('Only closed or failed runs may be frozen as evidence');
   }
+  const sourceDirectory = runDirectory(root, siteKey, runId);
+  const review = publicFixture ? publicFixtureProblems(sourceDirectory, { includeScreenshots }) : { excluded: [], problems: [] };
+  if (review.problems.length) {
+    const shown = review.problems.slice(0, 20).join('\n');
+    const more = review.problems.length > 20 ? `\n...and ${review.problems.length - 20} more` : '';
+    throw new Error(`Public fixture promotion blocked. Redact or keep the fixture private:\n${shown}${more}`);
+  }
   const fixturePath = publicFixture
     ? resolve(root, 'tools', 'cloner', 'fixtures', name)
     : resolve(root, '.cloner-runtime', 'fixtures', name);
   if (existsSync(fixturePath)) throw new Error(`Fixture already exists: ${name}`);
   mkdirSync(dirname(fixturePath), { recursive: true, mode: 0o700 });
-  cpSync(runDirectory(root, siteKey, runId), fixturePath, { recursive: true, errorOnExist: true });
+  const excluded = new Set(review.excluded);
+  cpSync(sourceDirectory, fixturePath, {
+    recursive: true,
+    errorOnExist: true,
+    filter: (path) => !excluded.has(relative(sourceDirectory, path).split(sep).join('/')),
+  });
   const fixtureManifest = {
     fixtureSchemaVersion: 1,
     fixtureName: name,
@@ -397,6 +433,7 @@ export function freezeFixture(root = process.cwd(), siteKey, runId, name, { publ
     frozenAt: nowIso(),
     taxonomy: 'golden evidence',
     visibility: publicFixture ? 'public' : 'private',
+    ...(publicFixture ? { excludedArtifacts: review.excluded } : {}),
   };
   writeFileSync(join(fixturePath, 'fixture.json'), `${JSON.stringify(fixtureManifest, null, 2)}\n`, { mode: 0o600 });
   return fixtureManifest;

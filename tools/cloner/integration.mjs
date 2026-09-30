@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -99,6 +99,24 @@ async function main() {
       classification: 'invariant',
       mode: 'gate',
       threshold: 0,
+    }, {
+      route: '/home',
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
+      id: 'overlay-open',
+      selector: '#overlay-root',
+      state: { action: 'click', selector: '[data-action="more"] >> nth=0' },
+      classification: 'invariant',
+      mode: 'gate',
+      threshold: 0,
+    }, {
+      route: '/noise',
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
+      id: 'noise-panel',
+      selector: 'main',
+      mask: '#noise-value',
+      classification: 'invariant',
+      mode: 'gate',
+      threshold: 0,
     }],
   }, null, 2)}\n`);
   let source;
@@ -121,14 +139,21 @@ async function main() {
     assert.notEqual(unverified.code, 0, 'unverified hydration route must fail clone measurement');
     assert.match(unverified.stderr, /Clone runtime is not hydrated on \/unverified-hydration; evidence=unverified/);
 
-    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
-    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
+    const modules = ['--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot', '--aria', '--head', '--performance'];
+    const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', ...modules]);
+    const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', ...modules]);
     const sourceRun = sourceMeasurement.runId;
     const cloneRun = cloneMeasurement.runId;
     assert.match(sourceRun, /^\d{8}T\d{6}Z_source_[a-f0-9]{8}$/);
     assert.match(cloneRun, /^\d{8}T\d{6}Z_clone_[a-f0-9]{8}$/);
     assert.equal(sourceMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
     assert.equal(cloneMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
+    for (const coverage of [sourceMeasurement.coverage.measurement, cloneMeasurement.coverage.measurement]) {
+      assert.equal(coverage.ariaCoverageComplete, true);
+      assert.equal(coverage.headCoverageComplete, true);
+      assert.equal(coverage.performanceCoverageComplete, true);
+      assert.equal(coverage.runtimeErrorRoutesCaptured, ROUTES.length);
+    }
 
     const sourceAudit = await audit(parityRoot, policyPath, 'source', sourceRun, ['--profile', profile]);
     const sourceClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'source', '--run', sourceRun, ...commonArgs(parityRoot, policyPath)]);
@@ -150,11 +175,21 @@ async function main() {
     assert.equal(initialDiff.json.domSnapshotCoverage.complete, true);
     const initialCategories = new Set(initialDiff.json.findings.map((finding) => finding.category));
     const initialFindingIds = new Set(findingEventsFromReport(initialDiff.json).map((event) => event.findingId));
-    for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class', 'visual-region-mismatch', 'motion-declared-mismatch']) {
+    for (const category of ['missing-control', 'control-aria-mismatch', 'control-overlay-mismatch', 'control-dom-mismatch', 'new-dead-runtime-class', 'visual-region-mismatch', 'motion-declared-mismatch', 'aria-outline-mismatch', 'head-description-mismatch', 'runtime-page-error-mismatch', 'runtime-hydration-error']) {
       assert.ok(initialCategories.has(category), `expected initial finding ${category}`);
     }
     assert.equal(initialCategories.has('motion-transform-mismatch'), false, 'equivalent transform longhands must compare equal');
     assert.equal(initialCategories.has('motion-samples-mismatch'), false, 'deterministic samples must compare equal');
+    assert.equal(initialDiff.json.findings.some((finding) => finding.subject?.regionId === 'noise-panel'), false, 'masked timer text must not create a visual finding');
+    const reportHtml = readFileSync(initialDiff.json.reportHtmlPath, 'utf8');
+    assert.match(reportHtml, /visual-region-mismatch/u);
+    assert.match(reportHtml, /<img loading="lazy"/u);
+    assert.doesNotMatch(reportHtml, /<script/iu, 'report HTML must not carry executable content');
+    const tokens = await runCli(parityRoot, ['tokens', '--run', sourceRun, '--target', 'source', ...commonArgs(parityRoot, policyPath)]);
+    assert.equal(tokens.code, 0, tokens.stderr);
+    const derivedTokens = JSON.parse(readFileSync(tokens.json.outputs.tokens, 'utf8'));
+    assert.ok(derivedTokens.colors.text.some((entry) => entry.value === 'rgb(46, 139, 87)'), 'fixture text colour must appear in derived tokens');
+    assert.ok(existsSync(tokens.json.outputs.theme));
 
     const cloneObservations = cloneAudit.audits.flatMap((entry) => entry.observations);
     const sourceObservations = sourceAudit.audits.flatMap((entry) => entry.observations);
@@ -190,7 +225,7 @@ async function main() {
     const clonePort = clone.port;
     await clone.close();
     clone = await startFixtureServer({ mode: 'clone', repaired: true, port: clonePort });
-    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, '--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot']);
+    const repairedMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory-run', cloneRun, ...modules]);
     assert.equal(repairedMeasurement.coverage.measurement.domSnapshotCoverageComplete, true);
     const repairedAudit = await audit(parityRoot, policyPath, 'clone', repairedMeasurement.runId);
     const repairedClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'clone', '--run', repairedMeasurement.runId, ...commonArgs(parityRoot, policyPath)]);
@@ -221,6 +256,12 @@ async function main() {
     assert.equal(responsiveDiff.code, 0, responsiveDiff.stderr);
     assert.equal(responsiveDiff.json.responsiveCoverage.complete, true);
     assert.deepEqual(responsiveDiff.json.findings, [], 'matching responsive fixture should produce no responsive findings');
+    const responsiveIndex = JSON.parse(readArtifact(parityRoot, SITE, responsiveSourceMeasurement.json.runId, 'measurements/responsive.json').toString('utf8'));
+    const responsiveRoute = JSON.parse(readArtifact(parityRoot, SITE, responsiveSourceMeasurement.json.runId, responsiveIndex.routes[0].artifactPath).toString('utf8'));
+    const featureProbes = responsiveRoute.probes.filter((probe) => probe.features);
+    assert.deepEqual(featureProbes.map((probe) => probe.features), [{ colorScheme: 'light' }, { colorScheme: 'dark' }, { touch: false }, { touch: true }]);
+    assert.equal(featureProbes.find((probe) => probe.features.colorScheme === 'dark').mediaMatches.find((entry) => entry.condition === '(prefers-color-scheme:dark)')?.matches, true);
+    assert.equal(featureProbes.find((probe) => probe.features.touch === true).mediaMatches.find((entry) => entry.condition === '(hover:none)')?.matches, true);
 
     const assetSourceMeasurement = await runCli(parityRoot, [
       'measure', '--target', 'source', '--url', source.url, '--routes', '/assets', '--profile', profile, '--inventory', '--assets',
@@ -237,7 +278,7 @@ async function main() {
     const assetIndex = JSON.parse(readArtifact(parityRoot, SITE, assetCloneMeasurement.json.runId, 'measurements/assets.json').toString('utf8'));
     const assetRoute = assetIndex.routes.find((entry) => entry.route === '/assets');
     const assetObservation = JSON.parse(readArtifact(parityRoot, SITE, assetCloneMeasurement.json.runId, assetRoute.artifactPath).toString('utf8'));
-    const repeatedImageReferences = assetObservation.references.filter((reference) => reference.attribute === 'src');
+    const repeatedImageReferences = assetObservation.references.filter((reference) => reference.attribute === 'src' && reference.url.endsWith('/fixture.svg'));
     assert.equal(repeatedImageReferences.length, 2, 'repeated images must retain separate DOM associations');
     assert.notEqual(repeatedImageReferences[0].locator, repeatedImageReferences[1].locator, 'repeated image locators must remain unique');
     const assetDiff = await runCli(parityRoot, [
@@ -247,6 +288,14 @@ async function main() {
     assert.equal(assetDiff.code, 0, assetDiff.stderr);
     assert.equal(assetDiff.json.assetCoverage.complete, true);
     assert.deepEqual(assetDiff.json.findings, [], 'matching asset fixture should produce no asset findings');
+    const rights = await runCli(parityRoot, ['rights', '--run', assetSourceMeasurement.json.runId, ...commonArgs(parityRoot, policyPath)]);
+    assert.equal(rights.code, 0, rights.stderr);
+    assert.ok((rights.json.summary['source-owned'] ?? 0) >= 1, 'same-origin fixture assets must be classified as source-owned');
+
+    const sitemapMeasurement = await runCli(parityRoot, ['measure', '--target', 'clone', '--url', clone.url, '--sitemap', '--head', ...commonArgs(parityRoot, policyPath)]);
+    assert.equal(sitemapMeasurement.code, 0, sitemapMeasurement.stderr);
+    assert.equal(sitemapMeasurement.json.routeSource.kind, 'sitemap');
+    assert.equal(sitemapMeasurement.json.coverage.measurement.routesCompleted, 2, 'off-origin sitemap entries must be ignored');
 
     const partial = await runCli(parityRoot, [
       'measure', '--target', 'clone', '--url', clone.url, '--routes', '/home,/missing',
@@ -261,6 +310,48 @@ async function main() {
     ]);
     assert.equal(resumed.code, 0, resumed.stderr);
     assert.deepEqual(resumed.json.coverage.resume.routesReused, ['/home']);
+
+    const partialSource = await runCli(parityRoot, [
+      'measure', '--target', 'source', '--url', source.url, '--routes', '/home,/missing', '--profile', profile, '--profile-id', 'fixture',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.notEqual(partialSource.code, 0, 'partial source run must fail on missing route');
+    const partialSourceRun = /failed run: (\d{8}T\d{6}Z_source_[a-f0-9]{8})/u.exec(partialSource.stderr)?.[1];
+    const resumedSource = await runCli(parityRoot, [
+      'measure', '--target', 'source', '--url', source.url, '--routes', '/home', '--profile', profile, '--profile-id', 'fixture', '--resume-run', partialSourceRun,
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(resumedSource.code, 0, resumedSource.stderr);
+    assert.deepEqual(resumedSource.json.coverage.resume.routesReused, ['/home'], 'an unchanged source deployment must allow reuse');
+
+    const unchangedDrift = await runCli(parityRoot, ['drift', '--run', sourceRun, '--profile', profile, ...commonArgs(parityRoot, policyPath)]);
+    assert.equal(unchangedDrift.code, 0, unchangedDrift.stderr);
+    assert.deepEqual(unchangedDrift.json.unchangedRoutes, ROUTES);
+    const sourcePort = source.port;
+    await source.close();
+    source = await startFixtureServer({ mode: 'source', port: sourcePort, deployVersion: 'b2' });
+    const changedDrift = await runCli(parityRoot, ['drift', '--run', sourceRun, '--profile', profile, ...commonArgs(parityRoot, policyPath)]);
+    assert.equal(changedDrift.code, 0, changedDrift.stderr);
+    assert.deepEqual(changedDrift.json.changedRoutes, ROUTES);
+    assert.equal(changedDrift.json.next.routes, ROUTES.join(','));
+
+    const codeRoot = join(parityRoot, 'code');
+    mkdirSync(join(codeRoot, 'src'), { recursive: true });
+    writeFileSync(join(codeRoot, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: 'esnext', moduleResolution: 'bundler', target: 'es2020', types: [] }, include: ['src/**/*.ts'] }));
+    writeFileSync(join(codeRoot, 'src', 'hooks.ts'), 'export function useState<T>(value: T): [T, (next: T) => void] { return [value, () => {}]; }\n');
+    const panel = (read) => `import { useState } from './hooks';\nexport function Panel() {\n  const [open, setOpen] = useState(false);\n  setOpen(true);\n  return ${read ? 'open' : 'null'};\n}\n`;
+    writeFileSync(join(codeRoot, 'src', 'panel.ts'), panel(false));
+    const codeArgs = ['--root', codeRoot, '--site', SITE];
+    const codeAudit = await runCli(codeRoot, ['audit', 'clone-code', ...codeArgs]);
+    assert.equal(codeAudit.code, 0, codeAudit.stderr);
+    assert.deepEqual(codeAudit.json.audit.findings.map((finding) => finding.category), ['state-never-read']);
+    writeFileSync(join(codeRoot, 'src', 'panel.ts'), panel(true));
+    const repairedCodeAudit = await runCli(codeRoot, ['audit', 'clone-code', ...codeArgs]);
+    assert.equal(repairedCodeAudit.code, 0, repairedCodeAudit.stderr);
+    assert.deepEqual(repairedCodeAudit.json.audit.findings, []);
+    const codeFindings = await runCli(codeRoot, ['findings', ...codeArgs]);
+    assert.equal(codeFindings.code, 0, codeFindings.stderr);
+    assert.ok(codeFindings.json.findings.length === 1 && codeFindings.json.findings[0].status === 'closed', 'a clean re-audit must close the clone-code finding');
 
     const findings = await runCli(parityRoot, ['findings', ...commonArgs(parityRoot, policyPath)]);
     assert.equal(findings.code, 0, findings.stderr);

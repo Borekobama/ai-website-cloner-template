@@ -251,7 +251,9 @@ confident parity findings.
 The common measurement envelope is small and kind-specific. Initial supported
 kinds are route inventory, control observations, route-scoped runtime classes,
 compiled CSS classes, coverage, motion/state evidence, region-scoped visual
-evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot evidence, and the two audits. Preserve per-route
+evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot
+evidence, accessibility-tree evidence, head metadata, load metrics, runtime
+errors, deployment fingerprints, and the three audits. Preserve per-route
 provenance before aggregating class observations; one route's development CSS
 cannot represent another route.
 
@@ -316,7 +318,42 @@ findings; geometry mismatches remain informational.
 Visual regions are explicit evidence modules. Compare only configured regions;
 never use a whole-page pixel score. Keep screenshot evidence private by default.
 Missing or ambiguous invariant regions make visual coverage incomplete and cannot
-close an older visual finding.
+close an older visual finding. Add `mask` selectors for changing children such
+as clocks or avatars. Add a `state` (`hover`, `focus`, or `click` plus a trigger
+selector) to capture a region after an interaction; it runs on a fresh page and
+only after safe-action policy allows the action.
+
+Pass `--aria` to compare landmark and heading outlines (gate) plus accessible
+names and role counts (informational). Pass `--head` to compare title,
+description, robots, canonical path, language, hreflang, and JSON-LD types
+(gates) plus social previews, icons, viewport, and theme colour
+(informational). For a migration of a site the user owns, `--sitemap` supplies
+a bounded same-origin route list instead of `--routes`. Pass `--performance`
+for informational LCP, CLS, and transfer-byte comparisons, and measure a
+production build when load metrics matter. Every route also records runtime
+errors: clone-only page errors and hydration failures are gates. `--responsive`
+also probes colour scheme, reduced motion, and touch input when stylesheets
+name them.
+
+Every route records a deployment fingerprint. `--resume-run` reuses a source
+route only while its fingerprint still matches, and `drift` reports which routes
+changed since a run so that a revisit re-measures only those with
+`--inventory-run`:
+
+```bash
+npm run cloner -- drift --site <site-key> --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+npm run cloner -- tokens --site <site-key> --run "$SOURCE_RUN"
+npm run cloner -- audit clone-code --site <site-key> --run "$CLONE_RUN"
+npm run cloner -- rights --site <site-key> --run "$SOURCE_RUN"
+```
+
+Each `diff` also writes `report.html` beside `report.json`. Use it for review,
+but cite `report.json` and concrete run IDs as evidence. `tokens` drafts design
+tokens from DOMSnapshot evidence for component specs; it is a builder contract,
+not a measurement. `audit clone-code` records clone-health findings for React
+state that is set but never read and for typed registries that disagree.
+`rights` lists source assets that need a licence check; run it before
+publishing a clone of a site the user does not own.
 
 Parity findings identify source-vs-clone mismatches. Clone-health findings
 identify clone implementation-quality observations. Clone-health findings do
@@ -341,6 +378,8 @@ handoff includes:
 - repository commit and dirty-state identity for each run;
 - inventory provenance, requested/completed routes, and measurement coverage;
 - findings, policy exceptions, repair status, and known gaps;
+- the final diff's `report.html` path and the coverage of each optional module;
+- asset rights review status when the user does not own the source site;
 - visual QA results at desktop and mobile;
 - sections/components/specs/assets built and build/typecheck status.
 

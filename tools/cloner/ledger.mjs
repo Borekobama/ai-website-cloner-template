@@ -132,6 +132,8 @@ function routeAuditIsComplete(current, subject, routeAudit) {
 
 function auditSubjectCovered(previousFinding, current) {
   const subject = previousFinding.subject ?? previousFinding;
+  // Static code audits cover the whole repository, not individual routes.
+  if (current.evidenceClass === 'clone-code') return current.complete === true;
   if (!subject.route || !(current.coveredRoutes ?? []).includes(subject.route)) return false;
   if (current.evidenceClass === 'dead-control') {
     const routeAudit = (current.routes ?? []).find((entry) => entry.route === subject.route);

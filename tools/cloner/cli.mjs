@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { parseArgs } from './args.mjs';
+import { classifyAssetRights } from './asset-rights.mjs';
+import { hydrateAssetEvidence } from './assets.mjs';
 import { launchBrowser, launchPersistentContext } from './browser.mjs';
+import { auditCloneCode } from './clone-code.mjs';
+import { deploymentFingerprint, driftStatus } from './fingerprint.mjs';
+import { routesFromSitemap } from './head.mjs';
+import { safeUrl } from './redact.mjs';
+import { renderReportHtml } from './report-html.mjs';
+import { extractDesignTokens, renderDesignTokensMarkdown, renderThemeCss } from './tokens.mjs';
 import { auditDeadControls } from './audits/dead-controls.mjs';
 import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
 import { compareRuns, findingCanClose, findingEventsFromReport } from './diff.mjs';
@@ -32,16 +43,21 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.12.1
+AI Website Cloner parity CLI v0.13.0
 
 Usage:
-  npm run cloner -- <command> [options]
+  npm run cloner -- <command> [options]                     Repository copy
+  node <skill-root>/scripts/cloner.mjs <command> [options]  Portable skill launcher
 
 Commands:
   measure                         Capture a source or clone into a new immutable run
-  diff                            Compare two immutable runs with explicit policies
+  diff                            Compare two immutable runs; also writes report.html
   audit dead-controls             Audit controls with Playwright actionability checks
-  audit dead-classes               Audit route-scoped runtime classes against compiled CSS
+  audit dead-classes              Audit route-scoped runtime classes against compiled CSS
+  audit clone-code                Audit clone source for unread state and registry gaps
+  drift                           Re-fingerprint a run's routes to find new deployments
+  tokens                          Derive draft design tokens from DOMSnapshot evidence
+  rights                          Classify source assets that need a licence check
   findings                        Read the append-only findings ledger
   fixture freeze                  Freeze a run as golden evidence for self-tests
   selftest                        Run instrument regression tests
@@ -57,21 +73,26 @@ Measure options:
   --target source|clone          Measurement target (required)
   --url <url>                    Source or clone origin
   --routes <route,...>           Requested routes (default: URL pathname)
+  --sitemap [url]                Read routes from the target sitemap (default: /sitemap.xml)
   --profile <path>               Persistent source browser profile
   --tenant <id>                  Expected source tenant/workspace identity
   --role <name>                  Expected source role identity
   --profile-id <id>              Non-secret profile label for the manifest
   --inventory-run <run-id|current>  Existing immutable inventory for a subset measurement
   --inventory                     Declare this requested route set as the authoritative inventory
-  --resume-run <run-id>           Reuse compatible clone route evidence from a failed run
+  --resume-run <run-id>           Reuse compatible route evidence from a failed run; source
+                                  routes are reused only with a matching deployment fingerprint
   --server existing|managed      Clone server mode (default: existing)
   --hydration-selector <css>     Optional explicit clone hydration marker
   --visual-regions <path>        Versioned region-scoped visual measurement config
   --motion                      Capture declared motion/state evidence
   --motion-sample               Capture deterministic Web Animations API samples with --motion
   --dom-snapshot                Capture Chromium CDP DOMSnapshot evidence
-  --responsive                  Discover responsive CSS conditions and probe px thresholds
+  --responsive                  Discover responsive CSS conditions and probe px thresholds and media features
   --assets                      Capture network assets and DOM/CSS asset associations
+  --aria                        Capture accessibility-tree landmarks, headings, and role counts
+  --head                        Capture head metadata: title, description, canonical, robots, hreflang, JSON-LD, social, icons
+  --performance                 Capture informational load metrics: LCP, CLS, and transfer bytes
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -82,10 +103,19 @@ Diff options:
   --clone-audit <run-id>         Explicit compatible clone dead-controls audit
 
 Audit options:
-  --run <run-id|current>          Existing measurement run to audit
+  --run <run-id|current>          Existing measurement run to audit (optional for clone-code)
   --target source|clone          Resolve current ref and action target
   --route <path>                 Restrict a browser audit to one route
   --profile <path>               Persistent source profile when auditing source
+
+Drift options:
+  --run <run-id|current>          Measurement run whose routes are fingerprinted again
+  --target source|clone          Target kind (default: source)
+  --profile <path>               Persistent source profile (required for source)
+
+Tokens and rights options:
+  --run <run-id|current>          Run with DOMSnapshot evidence (tokens) or asset evidence (rights)
+  --target source|clone          Target kind (default: source)
 
 Findings options:
   --status verified|closed       Append status event for --finding
@@ -94,31 +124,11 @@ Findings options:
 
 Fixture options:
   --public                       Explicitly promote frozen evidence into tracked tools/cloner/fixtures
+  --include-screenshots          Keep PNG artifacts in a public fixture (excluded by default)
 `;
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
 
-function parseArgs(argv) {
-  const [command = 'help', ...rest] = argv;
-  const options = { command, _: [] };
-  for (let index = 0; index < rest.length; index += 1) {
-    const token = rest[index];
-    if (!token.startsWith('--')) {
-      options._.push(token);
-      continue;
-    }
-    const [key, inline] = token.slice(2).split('=', 2);
-    if (inline !== undefined) {
-      options[key] = inline;
-    } else if (rest[index + 1] && !rest[index + 1].startsWith('--')) {
-      options[key] = rest[index + 1];
-      index += 1;
-    } else {
-      options[key] = true;
-    }
-  }
-  return options;
-}
 
 function required(options, key) {
   if (!options[key]) throw new Error(`Missing required option --${key}`);
@@ -160,7 +170,7 @@ function auditRouteIdentity(sourceManifest, parentRoutes, route) {
 }
 
 function cloneHealthAuditContext({ auditName, target, siteKey, parentManifest, parentRunId, audit, findings }) {
-  const evidenceClass = auditName === 'dead-controls' ? 'dead-control' : 'dead-runtime-class';
+  const evidenceClass = { 'dead-controls': 'dead-control', 'dead-classes': 'dead-runtime-class', 'clone-code': 'clone-code' }[auditName];
   const inventoryRunId = parentManifest.scope?.inventoryRunId ?? null;
   const targetContext = {
     kind: target,
@@ -188,6 +198,7 @@ function cloneHealthAuditContext({ auditName, target, siteKey, parentManifest, p
     routesRequested: (audit.routes ?? []).map((entry) => entry.route).filter(Boolean),
     routesFailed: [],
     routes: audit.routes ?? [],
+    complete: audit.complete === true,
     findings,
   };
 }
@@ -285,12 +296,21 @@ async function commandMeasure(options) {
   const inventoryRunId = options['inventory-run']
     ? resolveRunId(root, siteKey, String(options['inventory-run']), target)
     : null;
+  let routes = routesFrom(options);
+  let routeSource = null;
+  if (options.sitemap) {
+    if (routes.length) throw new Error('Use either --routes or --sitemap, not both');
+    const sitemap = await routesFromSitemap(url, { sitemapUrl: options.sitemap === true ? null : String(options.sitemap) });
+    routes = sitemap.routes;
+    routeSource = sitemap.source;
+  }
   const result = await measureTarget({
     root,
     siteKey,
     target,
     url,
-    routes: routesFrom(options),
+    routes,
+    routeSource,
     profileDir: options.profile ? String(options.profile) : undefined,
     tenant: options.tenant,
     role: options.role,
@@ -307,8 +327,11 @@ async function commandMeasure(options) {
     domSnapshot: Boolean(options['dom-snapshot']),
     responsive: Boolean(options.responsive),
     assets: Boolean(options.assets),
+    aria: Boolean(options.aria),
+    head: Boolean(options.head),
+    performanceMetrics: Boolean(options.performance),
   });
-  jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, coverage: result.coverage });
+  jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, ...(routeSource ? { routeSource } : {}), coverage: result.coverage });
 }
 
 function resolveMeasurementRun(options, root, siteKey) {
@@ -476,6 +499,7 @@ function commandDiff(options) {
   const reportData = { ...report, visualArtifacts };
   delete reportData.visualArtifacts;
   writeArtifact(root, siteKey, reportRunId, 'report.json', { ...reportData, reportRunId }, { kind: 'report' });
+  writeArtifact(root, siteKey, reportRunId, 'report.html', renderReportHtml({ ...reportData, reportRunId }, { reportRunId, assetRights: sourceAssetRights(root, siteKey, sourceRunId) }), { kind: 'report-html', visibility: 'private' });
   writeArtifact(root, siteKey, reportRunId, 'coverage.json', {
     inventory: { source: report.coverage.sourceDetails?.inventory ?? null, clone: report.coverage.cloneDetails?.inventory ?? null },
     measurement: {
@@ -490,6 +514,10 @@ function commandDiff(options) {
     },
       ...(report.responsiveCoverage?.configured ? { responsive: report.responsiveCoverage } : {}),
     ...(report.assetCoverage?.configured ? { assets: report.assetCoverage } : {}),
+    ...(report.ariaCoverage?.configured ? { aria: report.ariaCoverage } : {}),
+    ...(report.headCoverage?.configured ? { head: report.headCoverage } : {}),
+    ...(report.performanceCoverage?.configured ? { performance: report.performanceCoverage } : {}),
+    runtimeErrors: report.runtimeErrorCoverage,
     scope: 'comparison',
   }, { kind: 'coverage' });
   const closed = closeRun(root, siteKey, reportRunId);
@@ -530,7 +558,7 @@ function commandDiff(options) {
     currentEvents.push({ type: 'finding.closed', findingId: finding.findingId, runId: reportRunId, sourceRunId, cloneRunId, evidence: { runId: reportRunId, artifact: 'report.json', locator: '#/findings' } });
   }
   recordReportFindings(root, siteKey, currentEvents);
-  jsonOutput({ ...reportData, visualArtifacts, reportRunId: closed.runId, reportPath: pathForRunArtifact(root, siteKey, reportRunId, 'report.json') });
+  jsonOutput({ ...reportData, visualArtifacts, reportRunId: closed.runId, reportPath: pathForRunArtifact(root, siteKey, reportRunId, 'report.json'), reportHtmlPath: pathForRunArtifact(root, siteKey, reportRunId, 'report.html') });
 }
 
 function commandFindings(options) {
@@ -548,7 +576,178 @@ function commandFixture(options) {
   const siteKey = required(options, 'site');
   const runId = resolveRunId(root, siteKey, required(options, 'run'), options.target ?? 'clone');
   const name = required(options, 'name');
-  jsonOutput(freezeFixture(root, siteKey, runId, name, { publicFixture: Boolean(options.public) }));
+  jsonOutput(freezeFixture(root, siteKey, runId, name, { publicFixture: Boolean(options.public), includeScreenshots: Boolean(options['include-screenshots']) }));
+}
+
+function sourceAssetRights(root, siteKey, runId) {
+  const manifest = readManifest(root, siteKey, runId);
+  if (!manifest.artifacts.some((artifact) => artifact.path === 'measurements/assets.json')) return null;
+  const index = JSON.parse(readArtifact(root, siteKey, runId, 'measurements/assets.json').toString('utf8'));
+  return classifyAssetRights(hydrateAssetEvidence({ root, siteKey, runId, index }), { origin: manifest.target?.origin });
+}
+
+async function commandCloneCodeAudit(options) {
+  await runSelfTests();
+  const root = options.root ? String(options.root) : process.cwd();
+  const siteKey = required(options, 'site');
+  const parentRunId = options.run ? resolveRunId(root, siteKey, String(options.run), 'clone') : null;
+  const parentManifest = parentRunId ? readManifest(root, siteKey, parentRunId) : { target: { kind: 'clone' }, scope: {} };
+  const audit = auditCloneCode({ root });
+  const auditRunId = createRunId('audit-code');
+  createRun({
+    root,
+    siteKey,
+    runId: auditRunId,
+    kind: 'audit',
+    target: { kind: 'clone', origin: parentManifest.target?.origin ?? null, profileId: null, tenant: parentManifest.target?.tenant ?? null, role: parentManifest.target?.role ?? null },
+    scope: { parentRunId, inventoryRunId: parentManifest.scope?.inventoryRunId ?? null, routesRequested: [], routesCompleted: [], routesFailed: [] },
+  });
+  writeArtifact(root, siteKey, auditRunId, 'audits/clone-code.json', audit, { kind: 'clone-code-audit' });
+  writeArtifact(root, siteKey, auditRunId, 'coverage.json', { inventory: null, measurement: { filesAnalyzed: audit.filesAnalyzed, registriesAnalyzed: audit.registriesAnalyzed, cloneCodeCoverageComplete: audit.complete }, scope: 'repository', parentRunId }, { kind: 'coverage' });
+  const closed = closeRun(root, siteKey, auditRunId);
+  recordCloneHealthAuditFindings({
+    root,
+    siteKey,
+    auditName: 'clone-code',
+    target: 'clone',
+    parentManifest,
+    parentRunId,
+    auditRunId,
+    audit,
+    findingEntries: audit.findings.map((finding, index) => ({ finding, locator: `#/findings/${index}` })),
+    artifact: 'audits/clone-code.json',
+  });
+  jsonOutput({ runId: closed.runId, status: closed.status, audit });
+}
+
+async function commandDrift(options) {
+  await runSelfTests();
+  const root = options.root ? String(options.root) : process.cwd();
+  const siteKey = required(options, 'site');
+  const target = options.target ?? 'source';
+  const baseRunId = resolveRunId(root, siteKey, required(options, 'run'), target);
+  const baseManifest = readManifest(root, siteKey, baseRunId);
+  if (baseManifest.status !== 'closed') throw new Error(`Drift checks require a closed measurement run: ${baseRunId}`);
+  if (target === 'source' && !options.profile) throw new Error('Source drift checks require --profile');
+  const origin = new URL(baseManifest.target.origin).origin;
+  const baseRoutes = JSON.parse(readArtifact(root, siteKey, baseRunId, 'measurements/routes.json').toString('utf8')).routes ?? [];
+  const driftRunId = createRunId('drift');
+  const scope = { parentRunId: baseRunId, routesRequested: baseRoutes.map((entry) => entry.route), routesCompleted: [], routesFailed: [] };
+  createRun({
+    root,
+    siteKey,
+    runId: driftRunId,
+    kind: 'drift',
+    target: { kind: target, origin, profileId: baseManifest.target.profileId ?? null, tenant: baseManifest.target.tenant ?? null, role: baseManifest.target.role ?? null },
+    scope,
+  });
+  let context;
+  try {
+    context = options.profile
+      ? await launchPersistentContext(String(options.profile), { headless: true })
+      : await (async () => {
+        const browser = await launchBrowser({ headless: true });
+        const newContext = await browser.newContext();
+        newContext.__clonerBrowser = browser;
+        return newContext;
+      })();
+    const page = await context.newPage();
+    const routes = [];
+    for (const record of baseRoutes) {
+      const requests = [];
+      const onResponse = (response) => {
+        const request = response.request();
+        requests.push({ url: safeUrl(response.url()), status: response.status(), resourceType: request.resourceType(), method: request.method() });
+      };
+      page.on('response', onResponse);
+      try {
+        const response = await page.goto(new URL(record.route, origin).toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        const pathname = normalizedPathname(page.url(), origin);
+        const expected = normalizedPathname(record.finalUrl ?? record.route, origin);
+        let failure = null;
+        if (!response || response.status() >= 400) failure = `returned ${response?.status() ?? 'no response'}`;
+        else if (pathname !== expected || (target === 'source' && LOGIN_PATH.test(pathname))) failure = `resolved to ${pathname}`;
+        else if (target === 'source' && (await runtimeHealth(page, 'source')).loginForm) failure = 'exposes an authentication form';
+        if (failure) {
+          routes.push({ route: record.route, status: 'failed', reason: failure });
+          scope.routesFailed.push(record.route);
+          continue;
+        }
+        const current = deploymentFingerprint({ response, requests, origin });
+        routes.push({ route: record.route, status: driftStatus(record.deployment, current), previous: record.deployment?.fingerprint ?? null, current: current.fingerprint, basis: current.basis });
+        scope.routesCompleted.push(record.route);
+      } catch (error) {
+        routes.push({ route: record.route, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+        scope.routesFailed.push(record.route);
+      } finally {
+        page.off('response', onResponse);
+      }
+    }
+    const byStatus = (status) => routes.filter((entry) => entry.status === status).map((entry) => entry.route);
+    const summary = { changedRoutes: byStatus('changed'), unchangedRoutes: byStatus('unchanged'), unknownRoutes: byStatus('unknown'), failedRoutes: byStatus('failed') };
+    updateRun(root, siteKey, driftRunId, { scope });
+    writeArtifact(root, siteKey, driftRunId, 'drift.json', { schemaVersion: 1, kind: 'deployment-drift', baseRunId, routes, ...summary }, { kind: 'deployment-drift' });
+    writeArtifact(root, siteKey, driftRunId, 'coverage.json', { inventory: null, measurement: { routesRequested: baseRoutes.length, routesCompleted: scope.routesCompleted.length }, scope: 'drift', parentRunId: baseRunId }, { kind: 'coverage' });
+    const closed = closeRun(root, siteKey, driftRunId, { runtime: { authenticated: target === 'source' ? true : null } });
+    const remeasure = [...summary.changedRoutes, ...summary.unknownRoutes];
+    jsonOutput({
+      runId: closed.runId,
+      status: closed.status,
+      baseRunId,
+      ...summary,
+      routes,
+      next: remeasure.length ? { routes: remeasure.join(','), inventoryRun: baseManifest.scope?.inventoryRunId ?? null } : null,
+    });
+  } catch (error) {
+    try {
+      if (readManifest(root, siteKey, driftRunId).status === 'open') failRun(root, siteKey, driftRunId, error);
+    } catch {
+      // Preserve the original drift failure if finalization also fails.
+    }
+    throw error;
+  } finally {
+    if (context) {
+      const browser = context.__clonerBrowser;
+      await context.close().catch(() => {});
+      await browser?.close().catch(() => {});
+    }
+  }
+}
+
+function commandTokens(options) {
+  const root = options.root ? String(options.root) : process.cwd();
+  const siteKey = required(options, 'site');
+  const runId = resolveRunId(root, siteKey, required(options, 'run'), options.target ?? 'source');
+  const manifest = readManifest(root, siteKey, runId);
+  if (!manifest.artifacts.some((artifact) => artifact.path === 'measurements/dom-snapshots.json')) {
+    throw new Error(`Run ${runId} has no DOMSnapshot evidence; measure it with --dom-snapshot first`);
+  }
+  const index = JSON.parse(readArtifact(root, siteKey, runId, 'measurements/dom-snapshots.json').toString('utf8'));
+  const observations = (index.routes ?? []).map((entry) => JSON.parse(readArtifact(root, siteKey, runId, entry.artifactPath).toString('utf8')));
+  const tokens = extractDesignTokens(observations, { runId, siteKey });
+  // Tokens are a derived builder contract, so they live beside the research
+  // docs rather than inside the immutable run store.
+  const directory = join(dirname(parityRoot(root, siteKey)), 'design-tokens');
+  mkdirSync(directory, { recursive: true });
+  const outputs = {
+    tokens: join(directory, 'tokens.json'),
+    markdown: join(directory, 'DESIGN_TOKENS.md'),
+    theme: join(directory, 'theme.css'),
+  };
+  writeFileSync(outputs.tokens, `${JSON.stringify(tokens, null, 2)}\n`);
+  writeFileSync(outputs.markdown, renderDesignTokensMarkdown(tokens));
+  writeFileSync(outputs.theme, renderThemeCss(tokens));
+  jsonOutput({ runId, siteKey, derived: true, nodesAnalyzed: tokens.nodesAnalyzed, outputs });
+}
+
+function commandRights(options) {
+  const root = options.root ? String(options.root) : process.cwd();
+  const siteKey = required(options, 'site');
+  const runId = resolveRunId(root, siteKey, required(options, 'run'), options.target ?? 'source');
+  const rights = sourceAssetRights(root, siteKey, runId);
+  if (!rights) throw new Error(`Run ${runId} has no asset evidence; measure it with --assets first`);
+  jsonOutput({ runId, siteKey, ...rights });
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -566,6 +765,10 @@ async function main(argv = process.argv.slice(2)) {
   if (options.command === 'diff') return commandDiff(options);
   if (options.command === 'findings') return commandFindings(options);
   if (options.command === 'fixture' && options._[0] === 'freeze') return commandFixture(options);
+  if (options.command === 'drift') return commandDrift(options);
+  if (options.command === 'tokens') return commandTokens(options);
+  if (options.command === 'rights') return commandRights(options);
+  if (options.command === 'audit' && options._[0] === 'clone-code') return commandCloneCodeAudit(options);
   if (options.command === 'audit' && ['dead-controls', 'dead-classes'].includes(options._[0])) return commandAudit(options, options._[0]);
   throw new Error(`Unknown command: ${options.command} ${options._.join(' ')}`);
 }

@@ -65,6 +65,9 @@ export function parseResponsiveCondition(value) {
 
   const orientation = [...new Set([...condition.matchAll(/orientation:(portrait|landscape)/gu)].map((match) => match[1]))].sort();
   const prefersReducedMotion = [...new Set([...condition.matchAll(/prefers-reduced-motion:(reduce|no-preference)/gu)].map((match) => match[1]))].sort();
+  const prefersColorScheme = [...new Set([...condition.matchAll(/prefers-color-scheme:(light|dark)/gu)].map((match) => match[1]))].sort();
+  const hover = [...new Set([...condition.matchAll(/\((?:any-)?hover:(hover|none)\)/gu)].map((match) => match[1]))].sort();
+  const pointer = [...new Set([...condition.matchAll(/\((?:any-)?pointer:(fine|coarse|none)\)/gu)].map((match) => match[1]))].sort();
 
   return {
     condition,
@@ -75,6 +78,9 @@ export function parseResponsiveCondition(value) {
     )),
     orientation,
     prefersReducedMotion,
+    prefersColorScheme,
+    hover,
+    pointer,
   };
 }
 
@@ -139,6 +145,34 @@ export function generateExactPixelProbes(thresholds = [], baselineViewport = RES
     }
   }
   return [...probes.values()];
+}
+
+// Media features are probed at the baseline viewport. Both values of each
+// discovered feature are captured so a comparison never depends on which value
+// a stylesheet happened to name.
+export function generateMediaFeatureProbes(conditions = [], baselineViewport = RESPONSIVE_PROBE_BASELINE) {
+  const requestedViewport = {
+    width: Number(baselineViewport?.width ?? RESPONSIVE_PROBE_BASELINE.width),
+    height: Number(baselineViewport?.height ?? RESPONSIVE_PROBE_BASELINE.height),
+  };
+  const reasons = { colorScheme: new Set(), reducedMotion: new Set(), touch: new Set() };
+  for (const record of conditions) {
+    if (record.kind && record.kind !== 'media') continue;
+    const parsed = record.features ?? parseResponsiveCondition(record.condition);
+    if (parsed.prefersColorScheme?.length) reasons.colorScheme.add(record.condition);
+    if (parsed.prefersReducedMotion?.length) reasons.reducedMotion.add(record.condition);
+    if (parsed.hover?.length || parsed.pointer?.length) reasons.touch.add(record.condition);
+  }
+  const probes = [];
+  const add = (features, feature, conditionSet) => probes.push({
+    requestedViewport: { ...requestedViewport },
+    features,
+    reasons: [{ feature, conditions: [...conditionSet].sort() }],
+  });
+  if (reasons.colorScheme.size) for (const colorScheme of ['light', 'dark']) add({ colorScheme }, 'prefers-color-scheme', reasons.colorScheme);
+  if (reasons.reducedMotion.size) for (const reducedMotion of ['no-preference', 'reduce']) add({ reducedMotion }, 'prefers-reduced-motion', reasons.reducedMotion);
+  if (reasons.touch.size) for (const touch of [false, true]) add({ touch }, 'hover-pointer', reasons.touch);
+  return probes;
 }
 
 function conditionRecordKey(record) {
@@ -232,11 +266,34 @@ async function actualViewport(page) {
   }
 }
 
-async function captureProbe(page, probe, mediaConditions) {
+async function applyMediaFeatures(page, features, cdp) {
+  if (features.colorScheme !== undefined || features.reducedMotion !== undefined) {
+    await page.emulateMedia({
+      ...(features.colorScheme !== undefined ? { colorScheme: features.colorScheme } : {}),
+      ...(features.reducedMotion !== undefined ? { reducedMotion: features.reducedMotion } : {}),
+    });
+  }
+  if (features.touch !== undefined) {
+    if (!cdp) throw new Error('Touch probes require a Chromium CDP session');
+    // Chromium flips (hover: none) and (pointer: coarse) with touch emulation;
+    // it ignores hover/pointer overrides passed to setEmulatedMedia.
+    await cdp.send('Emulation.setTouchEmulationEnabled', features.touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+  }
+}
+
+async function resetMediaFeatures(page, features, cdp) {
+  if (features.colorScheme !== undefined || features.reducedMotion !== undefined) {
+    await page.emulateMedia({ colorScheme: null, reducedMotion: null });
+  }
+  if (features.touch !== undefined && cdp) await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+}
+
+async function captureProbe(page, probe, mediaConditions, cdp = null) {
   try {
     await page.setViewportSize(probe.requestedViewport);
+    if (probe.features) await applyMediaFeatures(page, probe.features, cdp);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const observation = await page.evaluate(({ conditions, controlLimit, landmarkLimit }) => {
+    const observation = await page.evaluate(({ conditions, controlLimit, landmarkLimit, includeColors }) => {
       const round = (value) => Math.round(value * 100) / 100;
       const rect = (element) => {
         const box = element.getBoundingClientRect();
@@ -246,6 +303,10 @@ async function captureProbe(page, probe, mediaConditions) {
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+      };
+      const colorOf = (element) => {
+        const style = getComputedStyle(element);
+        return { color: style.color, backgroundColor: style.backgroundColor, borderColor: style.borderTopColor };
       };
       const controls = [...document.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="switch"]')]
         .filter(visible);
@@ -290,9 +351,17 @@ async function captureProbe(page, probe, mediaConditions) {
             bodyWidth: document.body?.getBoundingClientRect().width ?? null,
             bodyHeight: document.body?.getBoundingClientRect().height ?? null,
           },
+          // Media-feature probes mostly change colour, not layout.
+          ...(includeColors ? {
+            colors: {
+              body: document.body ? colorOf(document.body) : null,
+              controls: controls.slice(0, controlLimit).map(colorOf),
+              landmarks: landmarks.slice(0, landmarkLimit).map(colorOf),
+            },
+          } : {}),
         },
       };
-    }, { conditions: mediaConditions, controlLimit: CONTROL_LIMIT, landmarkLimit: LANDMARK_LIMIT });
+    }, { conditions: mediaConditions, controlLimit: CONTROL_LIMIT, landmarkLimit: LANDMARK_LIMIT, includeColors: Boolean(probe.features) });
     return { ...probe, status: 'captured', ...observation };
   } catch (error) {
     return {
@@ -303,6 +372,8 @@ async function captureProbe(page, probe, mediaConditions) {
       summary: null,
       error: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    if (probe.features) await resetMediaFeatures(page, probe.features, cdp).catch(() => {});
   }
 }
 
@@ -334,10 +405,17 @@ export async function captureResponsive(page, { route } = {}) {
     const media = allConditions.filter((condition) => condition.kind === 'media');
     const container = allConditions.filter((condition) => condition.kind === 'container');
     const thresholds = responsiveThresholds(allConditions);
-    const probeRequests = generateExactPixelProbes(thresholds);
+    const probeRequests = [...generateExactPixelProbes(thresholds), ...generateMediaFeatureProbes(media)];
     const probes = [];
-    for (const probe of probeRequests) {
-      probes.push(await captureProbe(page, probe, media.map((condition) => condition.condition)));
+    const cdp = probeRequests.some((probe) => probe.features?.touch !== undefined)
+      ? await page.context().newCDPSession(page)
+      : null;
+    try {
+      for (const probe of probeRequests) {
+        probes.push(await captureProbe(page, probe, media.map((condition) => condition.condition), cdp));
+      }
+    } finally {
+      await cdp?.detach().catch(() => {});
     }
 
     let restoreFailure = null;
@@ -404,6 +482,7 @@ export function responsiveIndexEntry(observation, artifactPath) {
     probesExpected: observation.probeCoverage?.expected ?? 0,
     probesCaptured: observation.probeCoverage?.captured ?? 0,
     probeFailures: observation.probeCoverage?.failed ?? 0,
+    featureProbes: (observation.probes ?? []).filter((probe) => probe.features).length,
   };
 }
 
@@ -440,7 +519,8 @@ function conditionSet(observation, kind) {
 
 function probeKey(probe) {
   const viewport = probe?.requestedViewport ?? {};
-  return `${viewport.width}x${viewport.height}`;
+  const size = `${viewport.width}x${viewport.height}`;
+  return probe?.features ? `${size}|${canonicalJson(probe.features)}` : size;
 }
 
 function probeMap(observation) {
@@ -570,8 +650,11 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
     for (const key of commonProbeKeys) {
       const sourceProbe = sourceProbes.get(key);
       const cloneProbe = cloneProbes.get(key);
-      const subject = { route, viewport: sourceProbe.probe.requestedViewport };
-      const comparator = responsiveComparator('responsive-layout-probe', 'layout', 'gate');
+      const features = sourceProbe.probe.features ?? null;
+      const subject = { route, viewport: sourceProbe.probe.requestedViewport, ...(features ? { features } : {}) };
+      const comparator = features
+        ? responsiveComparator('responsive-feature-probe', 'layout', 'gate')
+        : responsiveComparator('responsive-layout-probe', 'layout', 'gate');
       const sourceSummary = sourceProbe.probe.summary ?? null;
       const cloneSummary = cloneProbe.probe.summary ?? null;
       const complete = sourceProbe.probe.status === 'captured'
@@ -583,7 +666,7 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
       layoutProbesCompared += 1;
       if (canonicalJson(sourceSummary) !== canonicalJson(cloneSummary)) {
         findings.push({
-          category: 'responsive-layout-mismatch',
+          category: features ? 'responsive-feature-mismatch' : 'responsive-layout-mismatch',
           subject,
           status: 'open',
           policy: { dimension: 'layout', mode: 'gate' },
@@ -602,7 +685,7 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
         const cloneProbe = cloneProbes.get(key);
         const sourceMatch = mediaMatch(sourceProbe.probe, condition);
         const cloneMatch = mediaMatch(cloneProbe.probe, condition);
-        const subject = { route, condition, viewport: sourceProbe.probe.requestedViewport };
+        const subject = { route, condition, viewport: sourceProbe.probe.requestedViewport, ...(sourceProbe.probe.features ? { features: sourceProbe.probe.features } : {}) };
         const comparator = responsiveComparator('responsive-media-probe', 'matches', 'gate');
         const complete = sourceProbe.probe.status === 'captured'
           && cloneProbe.probe.status === 'captured'

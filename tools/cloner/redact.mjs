@@ -95,6 +95,34 @@ export function containsSensitiveMaterial(value) {
   return false;
 }
 
+const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.([A-Z]{2,24})\b/giu;
+// Retina asset names such as logo@2x.png look like addresses but are files.
+const FILE_EXTENSION_TLD = /^(?:png|jpe?g|gif|webp|avif|svg|ico|m?js|css|json|map|woff2?|ttf|otf|eot|mp4|webm|mov|mp3|wav|pdf|txt|html?)$/iu;
+const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/gu;
+const TEL_LINK = /\btel:\+?[0-9][0-9 ().-]{5,}[0-9]/giu;
+const INTERNATIONAL_PHONE = /(?<![\w+/=])\+[1-9](?:[ .()-]{0,2}[0-9]){7,14}(?!\w)/gu;
+
+function personalDataPreview(value) {
+  return `${value.slice(0, 2)}… (${value.length} characters)`;
+}
+
+// Page text is not redacted wholesale, so evidence that leaves the private run
+// store is scanned for personal data first. Previews never echo the full value.
+export function findPersonalData(value) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+  const matches = [];
+  for (const match of serialized.matchAll(EMAIL)) {
+    if (!FILE_EXTENSION_TLD.test(match[1])) matches.push({ kind: 'email', preview: personalDataPreview(match[0]) });
+  }
+  for (const match of serialized.matchAll(JWT)) matches.push({ kind: 'jwt', preview: personalDataPreview(match[0]) });
+  for (const match of serialized.matchAll(TEL_LINK)) matches.push({ kind: 'phone', preview: personalDataPreview(match[0]) });
+  for (const match of serialized.matchAll(INTERNATIONAL_PHONE)) {
+    // Require a separator so base64 and hash runs with a "+" do not match.
+    if (/[ .()-]/u.test(match[0])) matches.push({ kind: 'phone', preview: personalDataPreview(match[0]) });
+  }
+  return matches;
+}
+
 export function safeUrl(value) {
   return redactUrl(value);
 }

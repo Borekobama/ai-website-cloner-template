@@ -122,6 +122,10 @@ Before accepting a parity milestone:
 - [ ] Findings are appended to `docs/research/<site-key>/_parity/ledger.jsonl`
 - [ ] Visual QA is reported as an additional signal, not as permanent completion
 - [ ] Region-scoped visual evidence compares only configured invariant regions and keeps screenshot artifacts private by default
+- [ ] Clone-only uncaught page errors and hydration failures are fixed or explained
+- [ ] For a migration of a site you own, `--head` parity passes for title, description, robots, canonical, hreflang, and structured data
+- [ ] `audit clone-code` has no open state-never-read or registry-key-mismatch findings, or each one is explained
+- [ ] Before publishing a clone of a site you do not own, `rights` output is reviewed and flagged assets are replaced or licensed
 
 Never use historical prose counts as fixture expectations. Freeze a failing
 instrument result with `fixture freeze` before repairing the instrument.

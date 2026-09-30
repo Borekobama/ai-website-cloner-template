@@ -25,6 +25,43 @@ export function normalizeClasses(classes) {
     .filter(Boolean))].sort();
 }
 
+// Splits a Tailwind-style class into variants and utility on top-level colons;
+// colons inside arbitrary values such as data-[state=open] stay intact.
+export function splitVariantClass(className) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const character of String(className)) {
+    if (character === '[' || character === '(') depth += 1;
+    else if ((character === ']' || character === ')') && depth > 0) depth -= 1;
+    if (character === ':' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  if (parts.length < 2 || parts.some((part) => !part)) return null;
+  return { variants: parts.slice(0, -1), utility: parts.at(-1).replace(/^!|!$/gu, '') };
+}
+
+// A dead variant class whose utility compiles elsewhere on the route points at
+// the variant. When no compiled class uses that variant at all, the variant is
+// most likely never defined; otherwise this class was likely built dynamically.
+export function deadClassDetail(className, compiledClasses) {
+  const parsed = splitVariantClass(className);
+  if (!parsed || !compiledClasses.has(parsed.utility)) return { className, reason: 'missing-css' };
+  const compiledVariants = new Set();
+  for (const compiled of compiledClasses) {
+    for (const variant of splitVariantClass(compiled)?.variants ?? []) compiledVariants.add(variant);
+  }
+  const undefinedVariants = parsed.variants.filter((variant) => !compiledVariants.has(variant));
+  return undefinedVariants.length
+    ? { className, reason: 'undefined-variant', variants: undefinedVariants, utility: parsed.utility }
+    : { className, reason: 'variant-class-not-generated', variants: parsed.variants, utility: parsed.utility };
+}
+
 function routePayload(observation) {
   return observation?.payload ?? observation ?? {};
 }
@@ -46,6 +83,7 @@ export function aggregateClassObservations(observations = []) {
       runtimeClasses,
       compiledClasses,
       deadClasses,
+      deadClassDetails: deadClasses.map((className) => deadClassDetail(className, compiledSet)),
       stylesheetSources: payload.stylesheetSources ?? [],
       stylesheetsTotal,
       stylesheetsReadable,
@@ -81,6 +119,7 @@ export function findingsForDeadClasses(audit, { runId, artifact = 'measurements/
   return audit.routes.flatMap((route, routeIndex) => route.cssCoverageComplete ? route.deadClasses.map((className, classIndex) => ({
     category: 'dead-runtime-class',
     subject: { route: route.route, className },
+    detail: route.deadClassDetails?.[classIndex] ?? null,
     status: 'open',
     evidence: { runId: runId ?? null, artifact, locator: `#/routes/${routeIndex}/deadClasses/${classIndex}` },
   })) : []);

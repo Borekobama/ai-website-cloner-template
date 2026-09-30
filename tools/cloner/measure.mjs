@@ -27,6 +27,11 @@ import { captureDomSnapshot } from './dom-snapshot.mjs';
 import { captureVisualRegions, normalizeVisualRegionConfig, visualRegionConfigHash } from './visual-regions.mjs';
 import { captureResponsive, responsiveIndexEntry } from './responsive.mjs';
 import { assetIndexEntry, captureAssetManifest, createAssetTracker } from './assets.mjs';
+import { ariaIndexEntry, captureAria } from './aria.mjs';
+import { captureHead, headIndexEntry } from './head.mjs';
+import { capturePerformance, performanceIndexEntry } from './performance.mjs';
+import { createRuntimeErrorTracker } from './runtime-errors.mjs';
+import { deploymentFingerprint } from './fingerprint.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
 
@@ -345,12 +350,33 @@ function routeVisualKey(route) {
   return route.replace(/[^a-z0-9]+/giu, '-').replace(/^-|-$/gu, '') || 'root';
 }
 
-function measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets }) {
-  return { visual: Boolean(normalizedVisualConfig), motion: Boolean(motion), motionSample: Boolean(motionSample), domSnapshot: Boolean(domSnapshot), responsive: Boolean(responsive), assets: Boolean(assets) };
+// Optional per-route evidence written under measurements/<directory>/<route-key>.json.
+const OPTIONAL_ROUTE_MODULES = [
+  { module: 'visual', directory: 'visual-regions' },
+  { module: 'motion', directory: 'motion' },
+  { module: 'domSnapshot', directory: 'dom-snapshots' },
+  { module: 'responsive', directory: 'responsive' },
+  { module: 'assets', directory: 'assets' },
+  { module: 'aria', directory: 'aria' },
+  { module: 'head', directory: 'head' },
+  { module: 'performance', directory: 'performance' },
+];
+
+function measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets, aria, head, performance }) {
+  return {
+    visual: Boolean(normalizedVisualConfig),
+    motion: Boolean(motion),
+    motionSample: Boolean(motionSample),
+    domSnapshot: Boolean(domSnapshot),
+    responsive: Boolean(responsive),
+    assets: Boolean(assets),
+    aria: Boolean(aria),
+    head: Boolean(head),
+    performance: Boolean(performance),
+  };
 }
 
 export function assertResumeCompatibility(manifest, { target, origin, profileId, tenant, role, policyHash, modules, viewport, deviceScaleFactor, visualConfigSha256, hydrationSelector, repository }) {
-  if (target === 'source') throw new Error('Source resume is disabled until source deployment fingerprint support is implemented');
   if (manifest.status !== 'failed') throw new Error(`Resume source must be a failed run: ${manifest.runId}`);
   if (manifest.kind !== target || manifest.target?.kind !== target) throw new Error(`Resume run target does not match ${target}: ${manifest.runId}`);
   if (manifest.engine?.version !== ENGINE_VERSION) throw new Error(`Resume run engine version does not match ${ENGINE_VERSION}: ${manifest.runId}`);
@@ -392,13 +418,9 @@ function loadReusableRouteEvidence(root, siteKey, manifest, requestedRoutes, { m
       const oldKey = artifact.path.split('/').at(-1).replace(/\.json$/u, '');
       const required = ['controls', 'classes', 'requests'].map((kind) => `measurements/${kind}/${oldKey}.json`);
       if (!required.every((path) => manifest.artifacts.some((candidate) => candidate.path === path))) continue;
-      const optional = [
-        modules?.motion ? `measurements/motion/${oldKey}.json` : null,
-        modules?.domSnapshot ? `measurements/dom-snapshots/${oldKey}.json` : null,
-        modules?.responsive ? `measurements/responsive/${oldKey}.json` : null,
-        modules?.assets ? `measurements/assets/${oldKey}.json` : null,
-        modules?.visual && visualRoutes.has(routeRecord.route) ? `measurements/visual-regions/${oldKey}.json` : null,
-      ].filter(Boolean);
+      const optional = OPTIONAL_ROUTE_MODULES
+        .filter(({ module }) => modules?.[module] && (module !== 'visual' || visualRoutes.has(routeRecord.route)))
+        .map(({ directory }) => `measurements/${directory}/${oldKey}.json`);
       if (!optional.every((path) => manifest.artifacts.some((candidate) => candidate.path === path))) continue;
       for (const path of [...required, ...optional]) {
         const value = JSON.parse(readArtifact(root, siteKey, manifest.runId, path).toString('utf8'));
@@ -420,10 +442,9 @@ function loadReusableRouteEvidence(root, siteKey, manifest, requestedRoutes, { m
 }
 
 function copyReusableRoute(root, siteKey, sourceManifest, targetRunId, entry, newKey, modules) {
-  const paths = [entry.routeRecord, ...entry.required].map((value) => typeof value === 'string' ? value : `measurements/routes/${entry.oldKey}.json`);
-  for (const moduleName of ['visual', 'motion', 'dom-snapshots', 'responsive', 'assets']) {
-    if (moduleName === 'visual' ? !modules.visual : moduleName === 'motion' ? !modules.motion : moduleName === 'dom-snapshots' ? !modules.domSnapshot : !modules[moduleName]) continue;
-    paths.push(`measurements/${moduleName === 'dom-snapshots' ? 'dom-snapshots' : moduleName === 'visual' ? 'visual-regions' : moduleName}/${entry.oldKey}.json`);
+  const paths = [`measurements/routes/${entry.oldKey}.json`, ...entry.required];
+  for (const { module, directory } of OPTIONAL_ROUTE_MODULES) {
+    if (modules[module]) paths.push(`measurements/${directory}/${entry.oldKey}.json`);
   }
   const visualPrefix = `measurements/visual-regions/${routeVisualKey(entry.route)}/`;
   for (const artifact of sourceManifest.artifacts ?? []) if (artifact.path.startsWith(visualPrefix)) paths.push(artifact.path);
@@ -433,16 +454,23 @@ function copyReusableRoute(root, siteKey, sourceManifest, targetRunId, entry, ne
     const record = sourceManifest.artifacts.find((artifact) => artifact.path === sourcePath);
     writeArtifact(root, siteKey, targetRunId, targetPath, readArtifact(root, siteKey, sourceManifest.runId, sourcePath), { kind: record.kind, visibility: record.visibility });
   }
+  const restoredModule = (module) => {
+    const { directory } = OPTIONAL_ROUTE_MODULES.find((candidate) => candidate.module === module);
+    return modules[module] ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/${directory}/${entry.oldKey}.json`) : null;
+  };
   return {
     routeRecord: entry.routeRecord,
     controls: JSON.parse(readArtifact(root, siteKey, sourceManifest.runId, entry.required[0]).toString('utf8')),
     classes: JSON.parse(readArtifact(root, siteKey, sourceManifest.runId, entry.required[1]).toString('utf8')),
     requests: JSON.parse(readArtifact(root, siteKey, sourceManifest.runId, entry.required[2]).toString('utf8')),
-    visual: modules.visual ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/visual-regions/${entry.oldKey}.json`) : null,
-    motion: modules.motion ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/motion/${entry.oldKey}.json`) : null,
-    domSnapshot: modules.domSnapshot ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/dom-snapshots/${entry.oldKey}.json`) : null,
-    responsive: modules.responsive ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/responsive/${entry.oldKey}.json`) : null,
-    assets: modules.assets ? readOptionalRouteJson(root, siteKey, sourceManifest, `measurements/assets/${entry.oldKey}.json`) : null,
+    visual: restoredModule('visual'),
+    motion: restoredModule('motion'),
+    domSnapshot: restoredModule('domSnapshot'),
+    responsive: restoredModule('responsive'),
+    assets: restoredModule('assets'),
+    aria: restoredModule('aria'),
+    head: restoredModule('head'),
+    performance: restoredModule('performance'),
   };
 }
 
@@ -483,6 +511,10 @@ export async function measureTarget({
   domSnapshot = false,
   responsive = false,
   assets = false,
+  aria = false,
+  head = false,
+  performanceMetrics = false,
+  routeSource = null,
   resumeRunId = null,
 } = {}) {
   await runSelfTests();
@@ -492,7 +524,7 @@ export async function measureTarget({
   if (!['source', 'clone'].includes(target)) throw new Error(`target must be source or clone, received ${target}`);
   if (authoritativeInventory && inventoryRunId) throw new Error('authoritativeInventory cannot be combined with inventoryRunId');
   const normalizedVisualConfig = visualConfig ? normalizeVisualRegionConfig(visualConfig) : null;
-  const modules = measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets });
+  const modules = measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets, aria, head, performance: performanceMetrics });
   const visualConfigSha256 = normalizedVisualConfig ? visualRegionConfigHash(normalizedVisualConfig) : null;
   const visualViewports = normalizedVisualConfig
     ? [...new Map(normalizedVisualConfig.regions.map((region) => [JSON.stringify(region.viewport), region.viewport])).values()]
@@ -532,6 +564,7 @@ export async function measureTarget({
     routesCompleted: [],
     routesFailed: [],
     ...(resumeManifest ? { resumeRunId: resumeManifest.runId, routesReused: [] } : {}),
+    ...(routeSource ? { routeSource } : {}),
   };
   createRun({
     root,
@@ -578,35 +611,48 @@ export async function measureTarget({
     const domSnapshotObservations = [];
     const responsiveObservations = [];
     const assetObservations = [];
+    const ariaObservations = [];
+    const headObservations = [];
+    const performanceObservations = [];
     const reusableRoutes = resumeManifest ? loadReusableRouteEvidence(root, siteKey, resumeManifest, requestedRoutes, { modules, visualRoutes: new Set(normalizedVisualConfig?.regions.map((region) => region.route) ?? []) }) : new Map();
     const visualRoutes = normalizedVisualConfig ? new Set(normalizedVisualConfig.regions.map((region) => region.route)) : new Set();
+    const restoreRoute = (route, reusable, artifactKey) => {
+      const restored = copyReusableRoute(root, siteKey, resumeManifest, runId, reusable, artifactKey, modules);
+      routeRecords.push({ ...restored.routeRecord });
+      controls.push(...(restored.controls.observations ?? []));
+      classObservations.push(restored.classes);
+      requestsByRoute.push(restored.requests);
+      if (restored.visual) visualObservations.push(restored.visual);
+      if (restored.motion) motionObservations.push(restored.motion);
+      if (restored.domSnapshot) domSnapshotObservations.push({
+        route: restored.domSnapshot.route,
+        url: restored.domSnapshot.url,
+        summary: restored.domSnapshot.summary,
+        structure: restored.domSnapshot.structure,
+        fingerprint: restored.domSnapshot.fingerprint,
+        artifactPath: `measurements/dom-snapshots/${artifactKey}.json`,
+      });
+      if (restored.responsive) responsiveObservations.push({ observation: restored.responsive, artifactPath: `measurements/responsive/${artifactKey}.json` });
+      if (restored.assets) assetObservations.push({ observation: restored.assets, artifactPath: `measurements/assets/${artifactKey}.json` });
+      if (restored.aria) ariaObservations.push({ observation: restored.aria, artifactPath: `measurements/aria/${artifactKey}.json` });
+      if (restored.head) headObservations.push({ observation: restored.head, artifactPath: `measurements/head/${artifactKey}.json` });
+      if (restored.performance) performanceObservations.push({ observation: restored.performance, artifactPath: `measurements/performance/${artifactKey}.json` });
+      scope.routesCompleted.push(route);
+      scope.routesReused.push(route);
+      updateRun(root, siteKey, runId, { scope: { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed], routesReused: [...scope.routesReused] } });
+    };
     for (const [routeIndex, route] of requestedRoutes.entries()) {
       const artifactKey = routeArtifactKey(route, routeIndex);
       const reusable = reusableRoutes.get(route);
-      if (reusable) {
-        const restored = copyReusableRoute(root, siteKey, resumeManifest, runId, reusable, artifactKey, modules);
-        routeRecords.push({ ...restored.routeRecord });
-        controls.push(...(restored.controls.observations ?? []));
-        classObservations.push(restored.classes);
-        requestsByRoute.push(restored.requests);
-        if (restored.visual) visualObservations.push(restored.visual);
-        if (restored.motion) motionObservations.push(restored.motion);
-        if (restored.domSnapshot) domSnapshotObservations.push({
-          route: restored.domSnapshot.route,
-          url: restored.domSnapshot.url,
-          summary: restored.domSnapshot.summary,
-          structure: restored.domSnapshot.structure,
-          fingerprint: restored.domSnapshot.fingerprint,
-          artifactPath: `measurements/dom-snapshots/${artifactKey}.json`,
-        });
-        if (restored.responsive) responsiveObservations.push({ observation: restored.responsive, artifactPath: `measurements/responsive/${artifactKey}.json` });
-        if (restored.assets) assetObservations.push({ observation: restored.assets, artifactPath: `measurements/assets/${artifactKey}.json` });
-        scope.routesCompleted.push(route);
-        scope.routesReused.push(route);
-        updateRun(root, siteKey, runId, { scope: { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed], routesReused: [...scope.routesReused] } });
+      // Clone evidence is tied to the repository identity checked above, so it
+      // is reused without a visit. Source evidence is reused only after a fresh,
+      // validated visit shows the same deployment fingerprint.
+      if (reusable && target === 'clone') {
+        restoreRoute(route, reusable, artifactKey);
         continue;
       }
       const tracker = createRequestTracker(page);
+      const errorTracker = createRuntimeErrorTracker(page);
       const assetTracker = assets ? createAssetTracker(page) : null;
       try {
         let response;
@@ -644,10 +690,20 @@ export async function measureTarget({
         if (target === 'source' && !allowUnauthenticated && critical.length) {
           throw preconditionError(`Critical authenticated document/runtime request failed on ${route}`, runId);
         }
+        const deployment = deploymentFingerprint({ response, requests: tracker.statuses, origin: baseUrl });
+        if (reusable && target === 'source' && deployment.fingerprint
+          && reusable.routeRecord.deployment?.fingerprint === deployment.fingerprint) {
+          restoreRoute(route, reusable, artifactKey);
+          continue;
+        }
+        // Load metrics come first: later modules resize the viewport and interact.
+        const performanceObservation = performanceMetrics ? await capturePerformance(page, { route }) : null;
         const routeControls = await collectControls(page, route);
         const routeClasses = await collectClasses(page, route);
+        const headObservation = head ? await captureHead(page, { route }) : null;
+        const ariaObservation = aria ? await captureAria(page, { route }) : null;
         const visual = normalizedVisualConfig
-          ? await captureVisualRegions(page, { config: normalizedVisualConfig, target, route })
+          ? await captureVisualRegions(page, { config: normalizedVisualConfig, target, route, policy })
           : null;
         const motionObservation = motion
           ? await captureMotion(page, { route, sample: motionSample })
@@ -669,6 +725,8 @@ export async function measureTarget({
           title: health.title,
           health,
           identity,
+          deployment,
+          runtimeErrors: errorTracker.snapshot(),
         };
         writeArtifact(root, siteKey, runId, `measurements/routes/${artifactKey}.json`, routeRecord, { kind: 'route-observation' });
         writeArtifact(root, siteKey, runId, `measurements/controls/${artifactKey}.json`, { route, observations: routeControls }, { kind: 'control-observation' });
@@ -715,6 +773,21 @@ export async function measureTarget({
           writeArtifact(root, siteKey, runId, artifactPath, assetObservation, { kind: 'asset-observation', visibility: 'private' });
           assetObservations.push({ observation: assetObservation, artifactPath });
         }
+        if (ariaObservation) {
+          const artifactPath = `measurements/aria/${artifactKey}.json`;
+          writeArtifact(root, siteKey, runId, artifactPath, ariaObservation, { kind: 'aria-observation', visibility: 'private' });
+          ariaObservations.push({ observation: ariaObservation, artifactPath });
+        }
+        if (headObservation) {
+          const artifactPath = `measurements/head/${artifactKey}.json`;
+          writeArtifact(root, siteKey, runId, artifactPath, headObservation, { kind: 'head-observation', visibility: 'private' });
+          headObservations.push({ observation: headObservation, artifactPath });
+        }
+        if (performanceObservation) {
+          const artifactPath = `measurements/performance/${artifactKey}.json`;
+          writeArtifact(root, siteKey, runId, artifactPath, performanceObservation, { kind: 'performance-observation' });
+          performanceObservations.push({ observation: performanceObservation, artifactPath });
+        }
         controls.push(...routeControls);
         classObservations.push(routeClasses);
         requestsByRoute.push(requestRecord);
@@ -728,6 +801,7 @@ export async function measureTarget({
           message: error instanceof Error ? error.message : String(error),
           requests: [...tracker.statuses],
           requestFailures: [...tracker.failures],
+          runtimeErrors: errorTracker.snapshot(),
         };
         try {
           writeArtifact(root, siteKey, runId, `measurements/failures/${artifactKey}.json`, failure, { kind: 'route-failure' });
@@ -738,6 +812,7 @@ export async function measureTarget({
         throw error;
       } finally {
         tracker.stop();
+        errorTracker.stop();
         assetTracker?.stop();
       }
     }
@@ -829,6 +904,15 @@ export async function measureTarget({
       };
       writeArtifact(root, siteKey, runId, 'measurements/assets.json', assetIndex, { kind: 'asset-observation-index' });
     }
+    const moduleIndex = (kind, observations, indexEntry) => ({
+      schemaVersion: 1,
+      kind,
+      routes: observations.map(({ observation, artifactPath }) => indexEntry(observation, artifactPath)),
+      complete: observations.length === routeRecords.length && observations.every(({ observation }) => observation.complete === true),
+    });
+    if (aria) writeArtifact(root, siteKey, runId, 'measurements/aria.json', moduleIndex('aria-observation-index', ariaObservations, ariaIndexEntry), { kind: 'aria-observation-index', visibility: 'private' });
+    if (head) writeArtifact(root, siteKey, runId, 'measurements/head.json', moduleIndex('head-observation-index', headObservations, headIndexEntry), { kind: 'head-observation-index', visibility: 'private' });
+    if (performanceMetrics) writeArtifact(root, siteKey, runId, 'measurements/performance.json', moduleIndex('performance-observation-index', performanceObservations, performanceIndexEntry), { kind: 'performance-observation-index' });
     const inventory = inventoryContext
       ? { runId: inventoryContext.runId, routes: inventoryContext.routes, ...(inventoryContext.controls !== undefined ? { controls: inventoryContext.controls } : {}), authoritative: true }
       : authoritativeInventory
@@ -885,6 +969,19 @@ export async function measureTarget({
           assetRequestFailures: assetObservations.reduce((sum, { observation }) => sum + (observation.responseCoverage?.requestFailures ?? 0), 0),
           assetCoverageComplete: assetObservations.length === routeRecords.length
             && assetObservations.every(({ observation }) => observation.complete === true),
+        } : {}),
+        runtimeErrorRoutesCaptured: routeRecords.filter((entry) => entry.runtimeErrors?.captured === true).length,
+        ...(aria ? {
+          ariaRoutesCaptured: ariaObservations.length,
+          ariaCoverageComplete: ariaObservations.length === routeRecords.length && ariaObservations.every(({ observation }) => observation.complete === true),
+        } : {}),
+        ...(head ? {
+          headRoutesCaptured: headObservations.length,
+          headCoverageComplete: headObservations.length === routeRecords.length && headObservations.every(({ observation }) => observation.complete === true),
+        } : {}),
+        ...(performanceMetrics ? {
+          performanceRoutesCaptured: performanceObservations.length,
+          performanceCoverageComplete: performanceObservations.length === routeRecords.length && performanceObservations.every(({ observation }) => observation.complete === true),
         } : {}),
       },
       scope: inventoryScope,

@@ -9,14 +9,19 @@ import {
   setRef,
   writeArtifact,
 } from './run-store.mjs';
-import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
+import { auditDeadRuntimeClasses, deadClassDetail } from './audits/dead-classes.mjs';
+import { ariaOutline, compareAriaEvidence, parseAriaSnapshot } from './aria.mjs';
+import { deploymentFingerprint } from './fingerprint.mjs';
+import { compareHeadEvidence } from './head.mjs';
+import { cumulativeLayoutShift } from './performance.mjs';
+import { compareRuntimeErrors } from './runtime-errors.mjs';
 import { classifyControl } from './audits/dead-controls.mjs';
 import { evaluateAction, policySha256 } from './policy.mjs';
-import { containsSensitiveMaterial, redactForPersistence } from './redact.mjs';
+import { containsSensitiveMaterial, findPersonalData, redactForPersistence } from './redact.mjs';
 import { compareVisualRegionImages, normalizeVisualRegionConfig } from './visual-regions.mjs';
 import { compareMotionObservations } from './motion.mjs';
 import { captureDomSnapshot, compareDomSnapshotStructure, domSnapshotCoverage } from './dom-snapshot.mjs';
-import { compareResponsiveEvidence, generateExactPixelProbes, normalizeCssCondition, parseResponsiveCondition, responsiveThresholds } from './responsive.mjs';
+import { compareResponsiveEvidence, generateExactPixelProbes, generateMediaFeatureProbes, normalizeCssCondition, parseResponsiveCondition, responsiveThresholds } from './responsive.mjs';
 import { compareAssetEvidence } from './assets.mjs';
 import { PNG } from 'pngjs';
 import { canonicalJson, sha256 } from './run-store.mjs';
@@ -142,6 +147,20 @@ export async function runSelfTests() {
     );
     assert.ok(structureComparison.findings.some((finding) => finding.category === 'dom-structure-mismatch'));
     assert.equal(structureComparison.coverage.complete, true);
+    const runIds = ['20260913T000009Z_source_a9b9c9d9', '20260913T000010Z_clone_b0c0d0e0'];
+    assert.deepEqual(findPersonalData('mail ops@example.test, asset logo@2x.png').map((match) => match.kind), ['email']);
+    assert.deepEqual(ariaOutline(parseAriaSnapshot('- main:\n  - \'heading "A: b" [level=2]\'')).map((entry) => `${entry.role}:${entry.level ?? ''}:${entry.name ?? ''}`), ['main::', 'heading:2:A: b']);
+    const ariaIndex = (outline) => ({ complete: true, routes: [{ route: '/home', complete: true, outline, roleCounts: {} }] });
+    assert.equal(compareAriaEvidence(ariaIndex([{ role: 'main', name: null }]), ariaIndex([]), ...runIds).findings[0].category, 'aria-outline-mismatch');
+    const headIndex = (robots) => ({ complete: true, routes: [{ route: '/home', complete: true, fields: { robots } }] });
+    assert.equal(compareHeadEvidence(headIndex('index'), headIndex('noindex'), ...runIds).findings[0].category, 'head-robots-mismatch');
+    const errorRoutes = (pageErrors) => ({ routes: [{ route: '/home', runtimeErrors: { captured: true, pageErrors, consoleErrors: [], consoleWarnings: 0, hydrationErrors: 0 } }] });
+    assert.equal(compareRuntimeErrors(errorRoutes([]), errorRoutes([{ signature: 'Boom' }]), ...runIds).findings[0].category, 'runtime-page-error-mismatch');
+    assert.equal(cumulativeLayoutShift([{ startTime: 0, value: 0.1 }, { startTime: 3000, value: 0.2 }]), 0.2);
+    const bundle = (name) => deploymentFingerprint({ requests: [{ url: `https://fixture.test/${name}`, status: 200, resourceType: 'script' }], origin: 'https://fixture.test' }).fingerprint;
+    assert.notEqual(bundle('app-1.js'), bundle('app-2.js'));
+    assert.deepEqual(generateMediaFeatureProbes([{ kind: 'media', condition: '(hover:none)' }]).map((probe) => probe.features.touch), [false, true]);
+    assert.equal(deadClassDetail('custom:opacity-50', new Set(['opacity-50'])).reason, 'undefined-variant');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

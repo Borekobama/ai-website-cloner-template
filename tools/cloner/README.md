@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.12.1
+# Cloner parity CLI v0.13.0
 
-The cloner CLI is the repository-owned v0.12.1 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.13.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -36,6 +36,15 @@ region id, selector, classification, mode, and pixel threshold fields. Only
 configured regions are compared. Screenshots and diff PNGs stay private run
 artifacts by default. Start from `tools/cloner/visual-regions.example.json`.
 No whole-page visual score exists.
+
+Add `mask` (or per-target `sourceMask`/`cloneMask`) selectors to paint changing
+children such as clocks, avatars, or counters identically on both captures.
+Add `state: { "action": "hover" | "focus" | "click", "selector": "..." }` to
+capture a region after an interaction. A state region runs on a fresh page, so
+later modules never see the interaction. A source action runs only after a
+matching safe-action policy allowance; a blocked action leaves the region
+incomplete instead of executing it. Masks and state triggers are part of the
+visual policy, so a finding closes only under the same ones.
 
 Capture declared motion and state evidence with both measurement runs:
 
@@ -86,6 +95,12 @@ container queries. Responsive findings retain concrete source/clone run IDs and
 private route-artifact locators, and `coverage.json` records responsive capture
 and comparison completeness when the module is requested.
 
+`--responsive` also probes media features at the 1280×720 baseline whenever a
+stylesheet names them: both `prefers-color-scheme` values, both
+`prefers-reduced-motion` values, and touch input, which flips `hover: none` and
+`pointer: coarse`. Feature probes add colour summaries for the body, landmarks,
+and visible controls. Their differences are `responsive-feature-mismatch` gates.
+
 Capture network assets and page associations with `--assets`:
 
 ```bash
@@ -102,18 +117,64 @@ artifact references. Asset hash differences are informational, not universal
 completion gates. Unreadable stylesheets or response bodies make asset coverage
 incomplete without failing ordinary route measurement.
 
+Capture accessibility, head metadata, and load metrics with explicit flags:
+
+```bash
+npm run cloner -- measure --target source --url https://example.test --site example.test-01234567 --routes /home,/billing --profile .cloner-profiles/primary --inventory --aria --head --performance
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --inventory --aria --head --performance
+```
+
+`--aria` records Playwright's accessibility snapshot per route. Landmark and
+heading outline changes are gates; accessible-name and role-count differences
+are informational. Values of editable controls are never persisted.
+
+`--head` records title, description, robots, canonical path, `lang`, hreflang
+alternates, and JSON-LD types as gates, and Open Graph/Twitter values, icons,
+viewport, and theme colour as informational. URLs compare by path and query, so
+source and clone origins may differ. For a migration of a site you own, pass
+`--sitemap` (or `--sitemap <url>`) instead of `--routes`. The CLI reads at most
+500 same-origin routes from at most 10 sitemap files, ignores other origins, and
+records the sitemap URL, hash, and truncation in the run scope. It is an
+explicit inventory source, not a crawler.
+
+`--performance` records largest contentful paint, cumulative layout shift, and
+transfer bytes after load. Every comparison is informational. It reports a
+clone CLS of at least 0.1 that is 0.05 above the source, an LCP that is 1.5×
+and 500 ms slower, or a page that is twice as heavy and 100 KB larger. Measure
+a production build when load metrics matter; a development server is slower.
+
+Every route records runtime errors without a flag. A clone-only uncaught page
+error or hydration failure is a gate. Clone-only console errors are
+informational, and an error that the source shares produces no finding.
+
 Resume compatible completed routes after a failed measurement:
 
 ```bash
 npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site example.test-01234567 --routes /home,/billing --resume-run "$FAILED_RUN"
 ```
 
-Resume accepts only failed clone runs with matching repository identity, target
+Resume accepts only failed runs with matching repository identity, target
 origin, identity context, policy, engine version, hydration selector, viewport,
-and measurement modules. Source resume stays disabled until source deployment
-fingerprint support exists. Profile paths never persist. Reused route artifacts
-remain immutable copies in new run. Routes without valid complete evidence run again.
-Use `--inventory` when resumed run must become authoritative.
+and measurement modules. Clone routes are reused directly. Source resume needs
+`--profile-id`; each source route is visited and validated again, and its
+evidence is reused only when the route's deployment fingerprint still matches.
+Profile paths never persist. Reused route artifacts remain immutable copies in
+the new run. Routes without valid complete evidence run again. Use
+`--inventory` when the resumed run must become authoritative.
+
+Every route records a deployment fingerprint: a hash of its same-origin script
+and stylesheet URLs, or of the document's ETag and Last-Modified headers when
+the page loads none. It identifies a deployed bundle, not page content. `drift`
+visits the routes of an earlier run again and reports which fingerprints
+changed:
+
+```bash
+npm run cloner -- drift --site example.test-01234567 --run "$SOURCE_RUN" --profile .cloner-profiles/primary
+```
+
+The output lists changed, unchanged, unknown, and failed routes, plus the
+`--routes` and `--inventory-run` values for a targeted re-measurement. Each
+drift check is a closed run of kind `drift` with its own evidence.
 
 Source interactions are blocked unless `parity-exceptions.json` contains an
 explicit matching allowance. Blocked controls are still inventoried, but are
@@ -151,12 +212,17 @@ share a defect.
 `fixture freeze` writes to ignored `.cloner-runtime/fixtures/` by default so
 authenticated or otherwise private evidence stays local. Add `--public` only
 when deliberately promoting reviewed, redacted evidence into tracked
-`tools/cloner/fixtures/`.
+`tools/cloner/fixtures/`. Public promotion refuses evidence that still contains
+credential-like material, email addresses, JWTs, or phone numbers, and leaves
+PNG screenshots out unless `--include-screenshots` is given. The scan cannot
+recognise every name in page text, so review a fixture before committing it.
 
 Measurements are intentionally small and explicit. The supported parity spine
 is route inventory, control inventory, route-scoped runtime/compiled classes,
-coverage, motion/state evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot evidence, two audits, region-scoped visual evidence,
-policy-aware comparison, and an append-only JSONL findings ledger. Optional
+coverage, motion/state evidence, responsive CSS evidence, asset/network evidence, Chromium DOMSnapshot evidence, accessibility-tree evidence, head metadata,
+load metrics, runtime errors, deployment fingerprints, three audits, region-scoped
+visual evidence, policy-aware comparison, and an append-only JSONL findings
+ledger. Optional
 modules, such as DOM snapshots, require immutable evidence, coverage, comparison
 semantics, focused self-tests, and no universal completion gate.
 Broad crawler abstractions remain outside this parity spine.
@@ -165,6 +231,39 @@ Class observations record total/readable/unreadable stylesheet counts and
 `cssCoverageComplete`. An unreadable relevant stylesheet keeps dead-class
 candidates visible in route evidence but suppresses authoritative dead-class
 findings for that route.
+
+Derived views never become evidence:
+
+- Every `diff` also writes `report.html` in its run directory. It groups
+  findings by route, shows source, clone, and difference captures side by side,
+  lists module coverage, and adds source asset rights when the source run has
+  asset evidence. Open it from disk; it loads nothing from the network.
+- `tokens --site <site-key> --run <run-id>` reads DOMSnapshot evidence and
+  writes `docs/research/<site-key>/design-tokens/` with `tokens.json`,
+  `DESIGN_TOKENS.md`, and a draft Tailwind v4 `theme.css`. Values are ranked by
+  how many rendered nodes use them; rename them by role before use.
+- `rights --site <site-key> --run <run-id>` classifies source images, fonts, and
+  media as source-owned, source-hosted fonts, known font or photo services, or
+  other third parties. The notes are hints for a licence check, not legal
+  conclusions.
+
+`audit clone-code --site <site-key> [--run <clone-run-id>]` type-checks the
+clone with its own TypeScript and records clone-health findings for React state
+that is set but never read and for registries typed over the same mapped key
+domain (`Record<Union, T>`, `Partial<...>`) that provide different keys.
+Registries without such a type are not compared. A complete re-audit closes a
+finding that no longer reproduces. Dead runtime-class findings also carry a
+`detail.reason`: `undefined-variant` when no compiled class uses that variant,
+`variant-class-not-generated` when the variant exists but this class was never
+generated (usually a dynamically built class name), or `missing-css`.
+
+`node scripts/sync-skills.mjs` also generates the portable skill in
+`skills/clone-website/`: the portable `SKILL.md`, the bootstrap reference, a
+launcher, and a copy of these runtime modules pinned to this repository's
+lockfile. The launcher installs that runtime once under
+`~/.skills-manager/runtime-cache/clone-website/<version>/` and records the
+bundle hash in every run manifest. CI fails when the bundle is out of date, so
+regenerate it after changing any runtime module.
 
 Playwright's browser binaries are installed separately when needed:
 

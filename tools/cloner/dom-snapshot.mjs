@@ -10,6 +10,10 @@ const COMPUTED_STYLES = [
   'box-sizing', 'overflow', 'z-index', 'opacity', 'visibility', 'transform',
   'transform-origin', 'color', 'background-color', 'font-family', 'font-size',
   'font-weight', 'line-height', 'letter-spacing', 'white-space',
+  // Appended in v0.13 for design-token extraction. Keep new properties at the
+  // end so older evidence still decodes positionally.
+  'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius',
+  'box-shadow', 'border-top-color', 'border-top-width', 'row-gap', 'column-gap',
 ];
 
 const SENSITIVE_FIELD = /(?:auth|credential|csrf|key|pass|secret|session|signature|token)/iu;
@@ -254,6 +258,7 @@ export async function captureDomSnapshot(page, { route } = {}) {
       route,
       url: safeUrl(page.url()),
       complete: true,
+      computedStyles: COMPUTED_STYLES,
       summary: snapshotSummary(snapshot),
       structure: structureSummary(snapshot),
       snapshot,
