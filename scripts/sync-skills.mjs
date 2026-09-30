@@ -7,7 +7,7 @@
  * Usage: node scripts/sync-skills.mjs
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -128,4 +128,123 @@ write(
   ) + '\n'
 );
 
-console.log('\nDone! 13 platform command/skill files generated from source skill.');
+// 13. Portable skill — a self-contained launcher plus the version-matched cloner
+//     runtime, for global skill managers that install skills outside this repo.
+const PACKAGE = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const LOCK = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'));
+const RUNTIME_DEPENDENCIES = ['pixelmatch', 'playwright', 'pngjs'];
+const PORTABLE_DIR = 'skills/clone-website';
+const RUNTIME_DIR = `${PORTABLE_DIR}/runtime/${PACKAGE.version}`;
+const RUNTIME_NAME = '@borekobama/clone-website-runtime';
+
+function fail(message) {
+  console.error(`Error: ${message}`);
+  process.exit(1);
+}
+
+function replaceOnce(text, find, replacement) {
+  const count = text.split(find).length - 1;
+  if (count !== 1) fail(`portable skill anchor must match exactly once (found ${count}): ${find.split('\n')[0]}`);
+  return text.replace(find, () => replacement);
+}
+
+// The portable skill runs the bundled launcher instead of the repository's
+// npm script. Every anchor must still exist in the source skill, so editing one
+// of these paragraphs fails the sync (and CI) until this mapping is updated.
+function portableSkill(text, version) {
+  const rules = [
+    ['modes, with an automatic capability check:\n', 'modes:\n'],
+    [
+      'If the current repository has the cloner CLI, run the full parity workflow. If\nit does not, continue bootstrap or extraction work without pretending that\nparity evidence exists. Report the result as `extraction-only`.\n',
+      'This skill bundles a versioned cloner runtime. Its launcher installs pinned Node\ndependencies and Chromium once in the shared Skills Manager cache, then reuses\nthat runtime from every repository while writing evidence into the current\nrepository.\n',
+    ],
+    [
+      'For **Bootstrap**, also read `docs/research/CLONE_BOOTSTRAP_REFERENCE.md` before\n',
+      'For **Bootstrap**, also read\n`references/CLONE_BOOTSTRAP_REFERENCE.md` relative to this skill before\n',
+    ],
+    [
+      "- Detect the repository-owned parity CLI before measurement:\n  `npm run cloner -- help`. Use it as the authoritative measurement path when\n  available. If the script or `tools/cloner/` is missing, do not install or\n  copy a large runtime silently. Use Browser MCP or the repository's existing\n  Playwright tests for reconnaissance/build verification, and label the result\n  `extraction-only` with parity evidence unavailable.\n",
+      "- Use this skill's bundled `scripts/cloner.mjs` launcher for authoritative\n  measurements. Resolve the launcher relative to the loaded `SKILL.md`; do not\n  require or copy `tools/cloner/` into the target repository.\n",
+    ],
+    ['- Run `npm run cloner -- selftest` before trusting a new instrument.', '- Run the bundled launcher with `selftest` before trusting a new instrument.'],
+    [
+      'The installed CLI help is the version-matched command contract. Read it before\nusing a command or guessing an option:\n\n```bash\nnpm run cloner -- help\nnpm run cloner -- selftest\n```\n',
+      `Resolve \`<skill-root>\` from this loaded \`SKILL.md\`, then use the shared launcher.\nThe launcher installs runtime v${version} once under\n\`~/.skills-manager/runtime-cache/clone-website/${version}/\`. The installed CLI help\nis the version-matched command contract:\n\n\`\`\`bash\nCLONER_LAUNCHER="<skill-root>/scripts/cloner.mjs"\nnode "$CLONER_LAUNCHER" help\nnode "$CLONER_LAUNCHER" selftest\n\`\`\`\n`,
+    ],
+    [
+      '### Capability detection\n\nRun this before parity commands:\n\n```bash\nnode -e \'const p=require("./package.json"); if (!p.scripts?.cloner) process.exit(1)\'\ntest -f tools/cloner/cli.mjs\n```\n\nWhen either check fails, skip `measure`, `audit`, `diff`, and `findings` CLI\ncommands. Do not add `tools/cloner/` or change package scripts unless the user\nexplicitly requests full parity support in that repository. Continue the\nrequested clone using available browser and test tooling, then report:\n\n```text\nmode: extraction-only\nparity CLI: unavailable\nimmutable parity evidence: not produced\n```\n\n',
+      'If first-use dependency installation fails, report its exact command and error.\nContinue as `extraction-only` only when the requested clone can still be safely\ncompleted with available browser/test tooling. Never claim immutable parity\nevidence when the launcher did not run.\n\n',
+    ],
+    ['in `docs/research/CLONE_BOOTSTRAP_REFERENCE.md`. Follow its', "in this skill's `references/CLONE_BOOTSTRAP_REFERENCE.md`. Follow its"],
+    ['When capability detection passes, after bootstrap assembly or during every\nrevisit:\n', 'After bootstrap assembly, or during every revisit:\n'],
+    ['When capability detection fails, do not run these commands. Complete the clone\nor component extraction with available browser/test tooling and include the\nextraction-only status in the completion report.\n\n', ''],
+  ];
+  let output = text;
+  for (const [find, replacement] of rules) output = replaceOnce(output, find, replacement);
+  return output.replaceAll('npm run cloner -- ', 'node "$CLONER_LAUNCHER" ');
+}
+
+// Runtime modules only: tests, fixtures, the integration harness, and the
+// launcher source stay in the repository.
+function runtimeFiles(directory = join(ROOT, 'tools', 'cloner'), prefix = '') {
+  return readdirSync(directory, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
+      const relativePath = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) {
+        return ['fixtures', 'portable', 'test-app'].includes(entry.name) ? [] : runtimeFiles(join(directory, entry.name), `${relativePath}/`);
+      }
+      return entry.name.endsWith('.mjs') && !entry.name.endsWith('.test.mjs') && entry.name !== 'integration.mjs' ? [relativePath] : [];
+    });
+}
+
+// Pins the runtime to the exact versions this repository tested, copied from
+// its lockfile so generation needs no network access.
+function runtimePackage() {
+  const dependencies = Object.fromEntries(RUNTIME_DEPENDENCIES.map((name) => {
+    const entry = LOCK.packages[`node_modules/${name}`];
+    if (!entry) fail(`${name} is missing from package-lock.json`);
+    return [name, entry.version];
+  }));
+  const manifest = { name: RUNTIME_NAME, version: PACKAGE.version, private: true, type: 'module', engines: { node: '>=24' }, dependencies };
+  const packages = {};
+  const visit = (name) => {
+    const key = `node_modules/${name}`;
+    if (packages[key]) return;
+    const entry = { ...LOCK.packages[key] };
+    if (!LOCK.packages[key]) fail(`${name} is missing from package-lock.json`);
+    delete entry.dev;
+    delete entry.devOptional;
+    packages[key] = entry;
+    for (const child of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies })) visit(child);
+  };
+  RUNTIME_DEPENDENCIES.forEach(visit);
+  const lockfile = {
+    name: RUNTIME_NAME,
+    version: PACKAGE.version,
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      '': { name: RUNTIME_NAME, version: PACKAGE.version, dependencies, engines: { node: '>=24' } },
+      ...Object.fromEntries(Object.entries(packages).sort(([left], [right]) => left.localeCompare(right))),
+    },
+  };
+  return { manifest, lockfile };
+}
+
+rmSync(join(ROOT, PORTABLE_DIR), { recursive: true, force: true });
+write(`${PORTABLE_DIR}/SKILL.md`, portableSkill(raw, PACKAGE.version));
+write(`${PORTABLE_DIR}/references/CLONE_BOOTSTRAP_REFERENCE.md`, readFileSync(join(ROOT, 'docs', 'research', 'CLONE_BOOTSTRAP_REFERENCE.md'), 'utf8'));
+write(`${PORTABLE_DIR}/scripts/cloner.mjs`, readFileSync(join(ROOT, 'tools', 'cloner', 'portable', 'launcher.mjs'), 'utf8'));
+const runtime = runtimePackage();
+const modules = runtimeFiles();
+for (const file of modules) {
+  const target = join(ROOT, RUNTIME_DIR, file);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, readFileSync(join(ROOT, 'tools', 'cloner', file), 'utf8'), 'utf8');
+}
+writeFileSync(join(ROOT, RUNTIME_DIR, 'package.json'), `${JSON.stringify(runtime.manifest, null, 2)}\n`, 'utf8');
+writeFileSync(join(ROOT, RUNTIME_DIR, 'package-lock.json'), `${JSON.stringify(runtime.lockfile, null, 2)}\n`, 'utf8');
+console.log(`  ✓ ${RUNTIME_DIR}/ (${modules.length} modules, package.json, package-lock.json)`);
+
+console.log('\nDone! 13 platform command/skill files and the portable skill generated from source skill.');
