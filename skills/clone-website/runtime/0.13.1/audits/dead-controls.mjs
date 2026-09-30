@@ -3,6 +3,9 @@ import { evaluateAction } from '../policy.mjs';
 import { redactForPersistence, safeUrl } from '../redact.mjs';
 
 const CONTROL_SELECTOR = 'button, a, input, select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="switch"]';
+// Element lookups on a trial page must not wait for Playwright's 30 s default:
+// after an action navigates or re-renders, the control can be gone for good.
+const DEFAULT_LOOKUP_TIMEOUT_MS = 1500;
 
 function safeText(value) {
   return String(value ?? '').replace(/\s+/gu, ' ').trim().slice(0, 240);
@@ -110,7 +113,7 @@ export function compareEffectSignatures(before, after, { ambientBefore = null, a
   };
 }
 
-async function localEffectSignature(locator) {
+async function localEffectSignature(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
   if (!locator) return null;
   const snapshot = await locator.evaluate((element) => {
     const explicitRegion = element.closest('[data-control-region]');
@@ -145,7 +148,7 @@ async function localEffectSignature(locator) {
       control: signature(roots.control),
       region: signature(roots.region),
     };
-  }).catch(() => null);
+  }, undefined, { timeout }).catch(() => null);
   if (!snapshot) return null;
   const fingerprint = (entry) => ({
     domFingerprint: sha256(redactForPersistence(entry.dom)),
@@ -159,7 +162,7 @@ async function localEffectSignature(locator) {
   };
 }
 
-export async function pageEffectSignature(page, network = { count: 0, requests: [] }, locator = null) {
+export async function pageEffectSignature(page, network = { count: 0, requests: [] }, locator = null, { timeout = DEFAULT_LOOKUP_TIMEOUT_MS } = {}) {
   const snapshot = await page.evaluate(() => {
     const body = document.body;
     const html = body?.innerHTML ?? '';
@@ -187,7 +190,7 @@ export async function pageEffectSignature(page, network = { count: 0, requests: 
       })),
     };
   });
-  const local = await localEffectSignature(locator);
+  const local = await localEffectSignature(locator, timeout);
   return {
     url: safeUrl(snapshot.url),
     domFingerprint: sha256(redactForPersistence(snapshot.dom)),
@@ -201,7 +204,7 @@ export async function pageEffectSignature(page, network = { count: 0, requests: 
   };
 }
 
-async function describeControl(locator) {
+async function describeControl(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
   return locator.evaluate((element) => {
     const tag = element.tagName.toLowerCase();
     const explicitRole = element.getAttribute('role');
@@ -223,7 +226,7 @@ async function describeControl(locator) {
         childElementCount: element.children.length,
       },
     };
-  });
+  }, undefined, { timeout });
 }
 
 function semanticControlKey(description) {
@@ -234,14 +237,14 @@ function semanticControlKey(description) {
   ]);
 }
 
-async function describeControls(page, selector) {
+async function describeControls(page, selector, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
   const controls = page.locator(selector);
   const count = await controls.count();
   const occurrences = new Map();
   const descriptions = [];
   for (let index = 0; index < count; index += 1) {
     const locator = controls.nth(index);
-    const description = await describeControl(locator).catch(() => ({ role: 'unknown', name: '', controlClass: 'default', href: null, selector: null, structure: null }));
+    const description = await describeControl(locator, timeout).catch(() => ({ role: 'unknown', name: '', controlClass: 'default', href: null, selector: null, structure: null }));
     const key = semanticControlKey(description);
     const occurrence = occurrences.get(key) ?? 0;
     occurrences.set(key, occurrence + 1);
@@ -250,14 +253,14 @@ async function describeControls(page, selector) {
   return descriptions;
 }
 
-async function relocateControl(page, selector, expected) {
-  const descriptions = await describeControls(page, selector);
+async function relocateControl(page, selector, expected, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
+  const descriptions = await describeControls(page, selector, timeout);
   const match = descriptions.find((description) => description.semanticKey === expected.semanticKey && description.occurrence === expected.occurrence);
   if (!match) return null;
   return { locator: page.locator(selector).nth(match.index), description: match };
 }
 
-async function controlState(locator) {
+async function controlState(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
   return locator.evaluate((element) => ({
     ariaState: {
       pressed: element.getAttribute('aria-pressed'),
@@ -269,17 +272,17 @@ async function controlState(locator) {
     },
     className: element.getAttribute('class'),
     dataState: element.getAttribute('data-state'),
-  }));
+  }), undefined, { timeout });
 }
 
-async function isDisabled(locator) {
-  const ariaDisabled = await locator.getAttribute('aria-disabled').catch(() => null);
+async function isDisabled(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
+  const ariaDisabled = await locator.getAttribute('aria-disabled', { timeout }).catch(() => null);
   if (ariaDisabled === 'true') return true;
   const nativeDisabled = await locator.evaluate((element) => {
     if ('disabled' in element && Boolean(element.disabled)) return true;
     return Boolean(element.closest('fieldset[disabled]'));
-  }).catch(() => true);
-  return nativeDisabled || !(await locator.isEnabled().catch(() => false));
+  }, undefined, { timeout }).catch(() => true);
+  return nativeDisabled || !(await locator.isEnabled({ timeout }).catch(() => false));
 }
 
 async function storageStateWithIndexedDb(context) {
@@ -292,6 +295,22 @@ async function storageStateWithIndexedDb(context) {
   }
 }
 
+// Runs `worker` over `items` with at most `limit` calls in flight and keeps
+// results in input order, so evidence locators stay deterministic.
+export async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const run = async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, run));
+  return results;
+}
+
 export async function auditDeadControls(page, {
   policy = {},
   target = 'clone',
@@ -300,6 +319,7 @@ export async function auditDeadControls(page, {
   effectWaitMs = 100,
   actionTimeout = 1500,
   validateTrial = null,
+  concurrency = 1,
 } = {}) {
   const baselineUrl = page.url();
   const browser = page.context().browser();
@@ -312,9 +332,33 @@ export async function auditDeadControls(page, {
   ));
   const baselineOrigin = new URL(baselineUrl).origin;
   const baselineViewport = page.viewportSize();
-  const descriptions = await describeControls(page, selector);
-  const observations = [];
-  for (const expected of descriptions) {
+  const descriptions = await describeControls(page, selector, actionTimeout);
+
+  // Policy depends only on the control's description, so a blocked occurrence
+  // is recorded from the baseline page and is never opened in a trial.
+  const recordBlocked = async (expected, decision) => {
+    const locator = page.locator(selector).nth(expected.index);
+    const state = await controlState(locator, actionTimeout).catch(() => null);
+    return {
+      route,
+      index: expected.index,
+      occurrence: expected.occurrence,
+      role: expected.role,
+      name: safeText(expected.name),
+      controlClass: expected.controlClass,
+      href: expected.href,
+      structure: expected.structure,
+      ariaState: state?.ariaState ?? null,
+      policy: decision,
+      visible: await locator.isVisible().catch(() => false),
+      enabled: !(await isDisabled(locator, actionTimeout)),
+      category: 'blocked-by-policy',
+      actionExecuted: false,
+      trialSkipped: true,
+    };
+  };
+
+  const runTrial = async (expected, decision) => {
     const trialContext = await browser.newContext({
       storageState: baselineStorageState,
       ...(baselineViewport ? { viewport: baselineViewport } : {}),
@@ -343,7 +387,7 @@ export async function auditDeadControls(page, {
           }
         }
         if (invalidReason) {
-          observations.push({
+          return {
             route,
             index: expected.index,
             occurrence: expected.occurrence,
@@ -357,22 +401,18 @@ export async function auditDeadControls(page, {
             category: 'trial-invalid',
             actionExecuted: false,
             trialInvalidReason: safeText(invalidReason),
-          });
-          continue;
+          };
         }
       }
       if (!response || response.status() >= 400) throw new Error(`Baseline route returned ${response?.status() ?? 'no response'}`);
-      const relocated = await relocateControl(trialPage, selector, expected);
-      const action = { route, role: expected.role, name: safeText(expected.name), selector: expected.selector, controlClass: expected.controlClass, occurrence: expected.occurrence };
-      const decision = evaluateAction({ policy, target, action });
+      const relocated = await relocateControl(trialPage, selector, expected, actionTimeout);
       if (!relocated) {
-        observations.push({ route, index: expected.index, occurrence: expected.occurrence, role: expected.role, name: safeText(expected.name), controlClass: expected.controlClass, href: expected.href, structure: expected.structure, policy: decision, visible: false, enabled: false, category: 'unreachable', actionExecuted: false, actionabilityError: 'Exact control occurrence could not be re-located from the fresh baseline' });
-        continue;
+        return { route, index: expected.index, occurrence: expected.occurrence, role: expected.role, name: safeText(expected.name), controlClass: expected.controlClass, href: expected.href, structure: expected.structure, policy: decision, visible: false, enabled: false, category: 'unreachable', actionExecuted: false, actionabilityError: 'Exact control occurrence could not be re-located from the fresh baseline' };
       }
       const { locator, description } = relocated;
       const visible = await locator.isVisible().catch(() => false);
-      const disabled = await isDisabled(locator);
-      const initialState = await controlState(locator).catch(() => null);
+      const disabled = await isDisabled(locator, actionTimeout);
+      const initialState = await controlState(locator, actionTimeout).catch(() => null);
       const base = {
         route,
         index: expected.index,
@@ -387,23 +427,11 @@ export async function auditDeadControls(page, {
         visible,
         enabled: !disabled,
       };
-      if (!decision.allowed) {
-        observations.push({ ...base, category: 'blocked-by-policy', actionExecuted: false });
-        continue;
-      }
-      if (!visible) {
-        observations.push({ ...base, category: 'unreachable', actionExecuted: false });
-        continue;
-      }
-      if (disabled) {
-        observations.push({ ...base, category: 'disabled', actionExecuted: false });
-        continue;
-      }
-      if (description.alreadyActive) {
-        observations.push({ ...base, category: 'already-active', actionExecuted: false });
-        continue;
-      }
-      const ambientBefore = await pageEffectSignature(trialPage, { count: 0, requests: [] }, locator);
+      if (!visible) return { ...base, category: 'unreachable', actionExecuted: false };
+      if (disabled) return { ...base, category: 'disabled', actionExecuted: false };
+      if (description.alreadyActive) return { ...base, category: 'already-active', actionExecuted: false };
+      const signature = (network) => pageEffectSignature(trialPage, network, locator, { timeout: actionTimeout });
+      const ambientBefore = await signature({ count: 0, requests: [] });
       const ambientRequests = [];
       const onAmbientRequest = (request) => {
         ambientRequests.push({ url: safeUrl(request.url()), method: request.method(), resourceType: request.resourceType() });
@@ -412,13 +440,12 @@ export async function auditDeadControls(page, {
       await trialPage.waitForTimeout(effectWaitMs);
       trialPage.off('request', onAmbientRequest);
       const ambientNetwork = { count: ambientRequests.length, requests: ambientRequests };
-      const ambientAfter = await pageEffectSignature(trialPage, ambientNetwork, locator);
-      const before = await pageEffectSignature(trialPage, { count: 0, requests: [] }, locator);
+      const ambientAfter = await signature(ambientNetwork);
+      const before = await signature({ count: 0, requests: [] });
       try {
         await locator.click({ trial: true, timeout: actionTimeout });
       } catch (error) {
-        observations.push({ ...base, category: 'unreachable', actionExecuted: false, actionabilityError: safeText(error.message) });
-        continue;
+        return { ...base, category: 'unreachable', actionExecuted: false, actionabilityError: safeText(error.message) };
       }
       const requests = [];
       const onRequest = (request) => {
@@ -435,21 +462,35 @@ export async function auditDeadControls(page, {
         trialPage.off('request', onRequest);
       }
       const network = { count: requests.length, requests };
-      const after = await pageEffectSignature(trialPage, network, locator).catch(() => ({ ...before, network, local: null }));
-      const finalState = await controlState(locator).catch(() => null);
+      // After a navigation or re-render the control may be gone; the bounded
+      // lookups above return null quickly instead of waiting 30 s each.
+      const after = await signature(network).catch(() => ({ ...before, network, local: null }));
+      const finalState = await controlState(locator, actionTimeout).catch(() => null);
       const effect = compareEffectSignatures(before, after, { ambientBefore, ambientAfter });
       const category = clickError
         ? 'unreachable'
         : classifyControl({ actionability: 'reachable', disabled: false, policyOutcome: decision.outcome, after: effect, alreadyActive: description.alreadyActive });
-      observations.push({ ...base, category, actionExecuted: !clickError, effect, ...(clickError ? { actionabilityError: clickError } : {}), evidence: { ambientBefore, ambientAfter, before, after, controlBefore: initialState, controlAfter: finalState } });
+      return { ...base, category, actionExecuted: !clickError, effect, ...(clickError ? { actionabilityError: clickError } : {}), evidence: { ambientBefore, ambientAfter, before, after, controlBefore: initialState, controlAfter: finalState } };
     } finally {
       await trialContext.close().catch(() => {});
     }
-  }
+  };
+
+  const auditControl = (expected) => {
+    const action = { route, role: expected.role, name: safeText(expected.name), selector: expected.selector, controlClass: expected.controlClass, occurrence: expected.occurrence };
+    const decision = evaluateAction({ policy, target, action });
+    return decision.allowed ? runTrial(expected, decision) : recordBlocked(expected, decision);
+  };
+
+  // Each trial has its own browser context, so clone trials can overlap.
+  // Source trials act on a live application and always run one at a time.
+  const trialConcurrency = target === 'source' ? 1 : Math.max(1, Math.floor(Number(concurrency)) || 1);
+  const observations = await mapWithConcurrency(descriptions, trialConcurrency, auditControl);
   return {
     schemaVersion: 1,
     kind: 'dead-control-audit',
     route,
+    trialConcurrency,
     controlCount: observations.length,
     classifiedCount: observations.filter((observation) => observation.category !== 'trial-invalid').length,
     trialInvalidCount: observations.filter((observation) => observation.category === 'trial-invalid').length,

@@ -73,7 +73,7 @@ scripts/            # Asset download scripts
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md` or any runtime module in `tools/cloner/`, run `node scripts/sync-skills.mjs` to regenerate the platform skills and the portable `skills/clone-website/` bundle.
 
-## Parity workflow (v0.13.0)
+## Parity workflow (v0.13.1)
 
 The repository-owned parity spine lives under `tools/cloner/` and is invoked
 with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,
@@ -251,7 +251,7 @@ Before accepting a parity milestone:
 - [ ] Clone-health dead-control closure requires an exercised non-dead observation or a fully completed compatible route audit with the control absent; blocked-by-policy, trial-invalid, partial, and failed coverage cannot close it
 - [ ] Dead-class evidence records stylesheet readability counts and suppresses authoritative findings when `cssCoverageComplete` is false
 - [ ] Diff reports record comparator coverage plus selected control-audit IDs/covered routes; finding closure requires compatible reproducing evidence
-- [ ] Each dead-control occurrence is exercised from a fresh baseline context and the exact occurrence is re-located before policy/action
+- [ ] Policy is decided before any trial; each allowed dead-control occurrence is exercised from a fresh baseline context and re-located before the action, and blocked occurrences are recorded without a trial
 - [ ] `audit dead-classes` preserves route provenance and aggregates only after the requested sweep
 - [ ] `diff` preserves duplicate control occurrences, cites concrete run IDs, and uses gate/informational/ignore policies for richer action effects; network behavior is not a universal gate
 - [ ] Every run stores its normalized policy snapshot; conflicting equally specific source-action rules fail closed

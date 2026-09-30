@@ -43,7 +43,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.13.0
+AI Website Cloner parity CLI v0.13.1
 
 Usage:
   npm run cloner -- <command> [options]                     Repository copy
@@ -107,6 +107,8 @@ Audit options:
   --target source|clone          Resolve current ref and action target
   --route <path>                 Restrict a browser audit to one route
   --profile <path>               Persistent source profile when auditing source
+  --trial-concurrency <n>        Parallel clone control trials, 1-16 (default: 4); source
+                                 trials always run one at a time
 
 Drift options:
   --run <run-id|current>          Measurement run whose routes are fingerprinted again
@@ -128,6 +130,7 @@ Fixture options:
 `;
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
+const DEFAULT_TRIAL_CONCURRENCY = 4;
 
 
 function required(options, key) {
@@ -334,6 +337,13 @@ async function commandMeasure(options) {
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, ...(routeSource ? { routeSource } : {}), coverage: result.coverage });
 }
 
+function trialConcurrencyOption(options) {
+  if (options['trial-concurrency'] === undefined) return DEFAULT_TRIAL_CONCURRENCY;
+  const value = Number(options['trial-concurrency']);
+  if (!Number.isInteger(value) || value < 1 || value > 16) throw new Error('--trial-concurrency must be an integer from 1 to 16');
+  return value;
+}
+
 function resolveMeasurementRun(options, root, siteKey) {
   const target = options.target ?? 'clone';
   const reference = required(options, 'run');
@@ -345,6 +355,7 @@ async function commandAudit(options, auditName) {
   const root = options.root ? String(options.root) : process.cwd();
   const siteKey = required(options, 'site');
   const target = options.target ?? 'clone';
+  const concurrency = target === 'clone' ? trialConcurrencyOption(options) : 1;
   const runId = resolveMeasurementRun(options, root, siteKey);
   const sourceManifest = readManifest(root, siteKey, runId);
   const policy = loadPolicy(options.policy, root, siteKey);
@@ -422,6 +433,7 @@ async function commandAudit(options, auditName) {
           policy,
           target,
           route,
+          concurrency,
           validateTrial: target === 'source'
             ? (trialPage) => validateSourceAuditPage(trialPage, {
               origin: sourceManifest.target.origin,

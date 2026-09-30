@@ -70,7 +70,7 @@ scripts/            # Asset download scripts
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md` or any runtime module in `tools/cloner/`, run `node scripts/sync-skills.mjs` to regenerate the platform skills and the portable `skills/clone-website/` bundle.
 
-## Parity workflow (v0.13.0)
+## Parity workflow (v0.13.1)
 
 The repository-owned parity spine lives under `tools/cloner/` and is invoked
 with `npm run cloner -- <command>`. Use `npm run cloner -- help` as the exact,

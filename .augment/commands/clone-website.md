@@ -265,9 +265,12 @@ and hit testing. Classify disabled, unreachable, blocked-by-policy,
 already-active, navigation, state change, overlay, DOM/style change, network-only effect, and dead
 separately. `DEAD` means an allowed, reachable control was actually exercised
 and produced no expected observable product effect; it does not mean a script
-failed to click. Every occurrence trial begins from a fresh baseline browser
-context, re-locates that exact occurrence, applies policy before execution,
-observes its effects, and then discards the mutated state. Source audits inherit
+failed to click. Safe-action policy is decided first: a blocked occurrence is
+recorded from the baseline page and is never opened in a trial. Every allowed
+occurrence trial begins from a fresh baseline browser context, re-locates that
+exact occurrence, observes its effects, and then discards the mutated state.
+Clone trials run up to four at a time (`--trial-concurrency`); source trials
+always run one at a time. Source audits inherit
 the parent measurement's profile label, origin, tenant, role, and expected route
 identity. Each isolated source trial restores storage state (including IndexedDB
 when supported) and re-verifies authentication, exact pathname, tenant, and role

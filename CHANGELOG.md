@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-30
+
+### Changed
+- The dead-controls audit decides safe-action policy before it opens a trial. Blocked controls are recorded from the baseline page without a page load, which speeds up source audits where most controls are blocked
+- Clone control trials run up to four at a time in separate browser contexts (`--trial-concurrency <n>`, 1-16); source trials still run one at a time
+
+### Fixed
+- Element lookups after a control action are bounded by the action timeout. A control that navigated away or re-rendered held the audit for two 30-second Playwright timeouts
+
 ## [0.13.0] - 2026-09-30
 
 ### Added
@@ -180,7 +189,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT license
 - README with badges, demo section, quick start, and star history
 
-[Unreleased]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/JCodesMore/ai-website-cloner-template/compare/v0.11.0...v0.12.0

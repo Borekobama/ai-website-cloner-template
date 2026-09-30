@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.13.0
+# Cloner parity CLI v0.13.1
 
-The cloner CLI is the repository-owned v0.13.0 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.13.1 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -194,6 +194,14 @@ Without it, a measurement is `ad-hoc` and cannot promote. Use
 authoritative inventory while preserving its denominator. Runs persist the
 normalized policy snapshot, and route evidence is appended incrementally so a
 later failed route does not erase earlier completed-route evidence.
+
+The dead-controls audit decides safe-action policy before it opens a trial, so
+a blocked control is recorded from the baseline page without a page load. Each
+allowed control still runs in a fresh browser context. Clone trials run four at
+a time by default (`--trial-concurrency <n>`, 1-16); source trials always run
+one at a time because they act on a live application. Element lookups after an
+action wait at most the action timeout, so a control that navigates away no
+longer holds the audit for Playwright's 30-second default.
 
 Control-effect comparisons may auto-select a dead-controls audit only when its
 parent measurement, policy snapshot, and route coverage are compatible. The
