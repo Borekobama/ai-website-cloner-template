@@ -28,7 +28,12 @@ export function canonicalMotionKey(observation) {
 }
 
 export async function captureMotion(page, { route, sample = false } = {}) {
-  const observations = await page.evaluate(({ sampleAnimations, animationFields, transitionFields }) => {
+  const observations = await page.evaluate(async ({ sampleAnimations, animationFields, transitionFields }) => {
+    // Screenshots and earlier samples restart running animations, which then
+    // stay pending for a frame. Pending animations cannot be sampled.
+    if (sampleAnimations && typeof document.getAnimations === 'function') {
+      await Promise.all(document.getAnimations().map((animation) => animation.ready.catch(() => null)));
+    }
     const stateAttributes = ['data-state', 'data-side', 'aria-expanded', 'aria-selected', 'aria-pressed', 'aria-checked', 'aria-disabled'];
     const semanticOccurrences = new Map();
 
@@ -147,51 +152,79 @@ export async function captureMotion(page, { route, sample = false } = {}) {
       }
     };
 
-    return [...document.querySelectorAll('*')].flatMap((element) => {
-      const style = getComputedStyle(element);
-      const hasAnimation = style.animationName !== 'none'
-        || style.animationDuration !== '0s'
-        || style.animationDelay !== '0s'
-        || style.animationTimingFunction !== 'ease'
-        || style.animationFillMode !== 'none'
-        || style.animationDirection !== 'normal'
-        || style.animationIterationCount !== '1';
-      const hasTransition = style.transitionProperty !== 'all'
-        || style.transitionDuration !== '0s'
-        || style.transitionDelay !== '0s'
-        || style.transitionTimingFunction !== 'ease';
-      const state = Object.fromEntries(stateAttributes.map((attribute) => [attribute, element.getAttribute(attribute)]));
-      const hasState = Object.values(state).some((value) => value !== null);
-      if (!hasAnimation && !hasTransition && !hasState) return [];
-      const semanticKey = `${role(element)}|${name(element)}|${element.getAttribute('data-motion-id') ?? ''}`;
-      const occurrence = semanticOccurrences.get(semanticKey) ?? 0;
-      semanticOccurrences.set(semanticKey, occurrence + 1);
-      const declared = Object.fromEntries([...animationFields, ...transitionFields].map((field) => [field, style[field]]));
-      const activeMotion = style.animationName !== 'none' || style.transitionDuration !== '0s';
-      const samples = readSamples(element);
-      return [{
-        identity: {
-          path: domPath(element),
-          tag: element.tagName.toLowerCase(),
-          role: role(element),
-          name: name(element),
-          motionId: element.getAttribute('data-motion-id'),
-          occurrence,
-        },
-        declared,
-        state,
-        transformLonghands: { translate: style.translate, rotate: style.rotate, scale: style.scale },
-        transformGate: activeMotion ? (sampleAnimations ? samples : null) : canonicalTransform(style),
-        transformGateComplete: !activeMotion || sampleAnimations,
-        rendered: {
-          transform: canonicalTransform(style),
-          opacity: style.opacity,
-          visibility: style.visibility,
-          rect: rect(element),
-        },
-        samples: readSamples(element),
-      }];
-    });
+    // Rendered values of a running animation depend on capture timing. Hold
+    // every running animation at its first frame while reading, then resume it.
+    const running = typeof document.getAnimations === 'function'
+      ? document.getAnimations()
+        .filter((animation) => animation.playState === 'running')
+        .map((animation) => ({ animation, currentTime: animation.currentTime, playbackRate: animation.playbackRate }))
+      : [];
+    for (const { animation } of running) {
+      animation.pause();
+      animation.currentTime = 0;
+    }
+    try {
+      return readObservations();
+    } finally {
+      for (const { animation, currentTime, playbackRate } of running) {
+        try {
+          animation.playbackRate = playbackRate;
+          animation.currentTime = currentTime;
+          animation.play();
+        } catch {
+          // A discarded animation cannot be restored.
+        }
+      }
+    }
+
+    function readObservations() {
+      return [...document.querySelectorAll('*')].flatMap((element) => {
+        const style = getComputedStyle(element);
+        const hasAnimation = style.animationName !== 'none'
+          || style.animationDuration !== '0s'
+          || style.animationDelay !== '0s'
+          || style.animationTimingFunction !== 'ease'
+          || style.animationFillMode !== 'none'
+          || style.animationDirection !== 'normal'
+          || style.animationIterationCount !== '1';
+        const hasTransition = style.transitionProperty !== 'all'
+          || style.transitionDuration !== '0s'
+          || style.transitionDelay !== '0s'
+          || style.transitionTimingFunction !== 'ease';
+        const state = Object.fromEntries(stateAttributes.map((attribute) => [attribute, element.getAttribute(attribute)]));
+        const hasState = Object.values(state).some((value) => value !== null);
+        if (!hasAnimation && !hasTransition && !hasState) return [];
+        const semanticKey = `${role(element)}|${name(element)}|${element.getAttribute('data-motion-id') ?? ''}`;
+        const occurrence = semanticOccurrences.get(semanticKey) ?? 0;
+        semanticOccurrences.set(semanticKey, occurrence + 1);
+        const declared = Object.fromEntries([...animationFields, ...transitionFields].map((field) => [field, style[field]]));
+        const activeMotion = style.animationName !== 'none' || style.transitionDuration !== '0s';
+        const samples = readSamples(element);
+        return [{
+          identity: {
+            path: domPath(element),
+            tag: element.tagName.toLowerCase(),
+            role: role(element),
+            name: name(element),
+            motionId: element.getAttribute('data-motion-id'),
+            occurrence,
+          },
+          declared,
+          state,
+          transformLonghands: { translate: style.translate, rotate: style.rotate, scale: style.scale },
+          transformGate: activeMotion ? (sampleAnimations ? samples : null) : canonicalTransform(style),
+          transformGateComplete: !activeMotion || sampleAnimations,
+          rendered: {
+            transform: canonicalTransform(style),
+            opacity: style.opacity,
+            visibility: style.visibility,
+            rect: rect(element),
+          },
+          // Sampling restarts the animation, so a second pass would find it pending.
+          samples,
+        }];
+      });
+    }
   }, { sampleAnimations: sample, animationFields: ANIMATION_FIELDS, transitionFields: TRANSITION_FIELDS });
   return {
     schemaVersion: MOTION_SCHEMA_VERSION,
@@ -223,6 +256,34 @@ export function motionSubject(observation) {
     motionId: observation.identity.motionId ?? null,
     occurrence: observation.identity.occurrence,
   };
+}
+
+const roundDelta = (value) => Number(value.toFixed(3));
+
+// Sampled positions are compared relative to each animation's first sample, so
+// a layout shift elsewhere on the page never looks like different motion.
+// Absolute positions stay in the informational rendered dimension.
+export function relativeMotionSamples(animations) {
+  if (!Array.isArray(animations)) return animations;
+  return animations.map((animation) => {
+    const origin = animation.samples?.[0]?.rect ?? null;
+    return {
+      ...animation,
+      samples: (animation.samples ?? []).map((sample) => ({
+        progress: sample.progress,
+        transform: sample.transform,
+        opacity: sample.opacity,
+        ...(sample.rect && origin ? {
+          rectDelta: {
+            x: roundDelta(sample.rect.x - origin.x),
+            y: roundDelta(sample.rect.y - origin.y),
+            width: roundDelta(sample.rect.width - origin.width),
+            height: roundDelta(sample.rect.height - origin.height),
+          },
+        } : {}),
+      })),
+    };
+  });
 }
 
 export function compareMotionObservations(source, clone, sourceRunId, cloneRunId) {
@@ -314,13 +375,13 @@ export function compareMotionObservations(source, clone, sourceRunId, cloneRunId
       cloneObservation,
       'transform',
       'gate',
-      Object.hasOwn(sourceObservation, 'transformGate') ? sourceObservation.transformGate : sourceObservation.rendered.transform,
-      Object.hasOwn(cloneObservation, 'transformGate') ? cloneObservation.transformGate : cloneObservation.rendered.transform,
+      relativeMotionSamples(Object.hasOwn(sourceObservation, 'transformGate') ? sourceObservation.transformGate : sourceObservation.rendered.transform),
+      relativeMotionSamples(Object.hasOwn(cloneObservation, 'transformGate') ? cloneObservation.transformGate : cloneObservation.rendered.transform),
       sourceObservation.transformGateComplete !== false && cloneObservation.transformGateComplete !== false,
     );
     compareDimension(sourceObservation, cloneObservation, 'rendered', 'informational', sourceObservation.rendered, cloneObservation.rendered);
     if (sourceObservation.samples?.length || cloneObservation.samples?.length) {
-      compareDimension(sourceObservation, cloneObservation, 'samples', 'informational', sourceObservation.samples, cloneObservation.samples);
+      compareDimension(sourceObservation, cloneObservation, 'samples', 'informational', relativeMotionSamples(sourceObservation.samples), relativeMotionSamples(cloneObservation.samples));
     }
   }
   return {
