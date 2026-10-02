@@ -64,7 +64,7 @@ const LATE_HYDRATION_SCRIPT = `
     }, 1200);
 `;
 
-function pageDocument({ route, mode, repaired, port, deployVersion }) {
+function pageDocument({ route, mode, repaired, port, deployVersion, shift = 0 }) {
   const isClone = mode === 'clone';
   const cloneNeedsRepair = isClone && !repaired;
   const extraCloneClass = cloneNeedsRepair ? ' clone-only-runtime' : '';
@@ -138,7 +138,7 @@ function pageDocument({ route, mode, repaired, port, deployVersion }) {
     <main class="page-shell"><h1>Broken hydration</h1><p data-hydration-error="true">Hydration deliberately failed.</p></main>
   ` : route === '/unverified-hydration' ? `
     <main class="page-shell"><h1>Unverified hydration</h1><p>Server-rendered content with Next-looking script evidence only.</p></main>
-  ` : route === '/forms' ? FORMS_BODY : route === '/plain-hydrated' ? `
+  ` : route === '/forms' ? FORMS_BODY.replace('<main class="page-shell">', `<main class="page-shell"${shift ? ` style="margin-left: ${shift}px"` : ''}>`) : route === '/plain-hydrated' ? `
     <main class="page-shell"><h1>Plain hydrated</h1><p>A hydration marker without a Next.js runtime.</p></main>
   ` : route === '/late-hydration' ? `
     <main class="page-shell"><h1>Late hydration</h1><button class="fixture-control" data-action="late" aria-label="Late action">Late action</button><p id="late-result"></p></main>
@@ -187,7 +187,9 @@ function pageDocument({ route, mode, repaired, port, deployVersion }) {
 </html>`;
 }
 
-export function startFixtureServer({ mode = 'source', repaired = false, host = '0.0.0.0', port = 0, deployVersion = 'a1' } = {}) {
+// `shift` moves the /forms content right by that many CSS pixels, for image
+// parity tests that need a measurably wrong clone.
+export function startFixtureServer({ mode = 'source', repaired = false, host = '0.0.0.0', port = 0, deployVersion = 'a1', shift = 0 } = {}) {
   if (!['source', 'clone'].includes(mode)) throw new Error(`Unsupported fixture mode: ${mode}`);
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -219,7 +221,7 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       return;
     }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    response.end(pageDocument({ route: requestUrl.pathname, mode, repaired, port: server.address()?.port ?? port, deployVersion }));
+    response.end(pageDocument({ route: requestUrl.pathname, mode, repaired, port: server.address()?.port ?? port, deployVersion, shift }));
   });
   return new Promise((resolve, reject) => {
     const onError = (error) => {

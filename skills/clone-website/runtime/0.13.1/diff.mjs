@@ -10,8 +10,9 @@ import { compareAriaEvidence } from './aria.mjs';
 import { compareHeadEvidence } from './head.mjs';
 import { comparePerformanceEvidence } from './performance.mjs';
 import { compareRuntimeErrors } from './runtime-errors.mjs';
+import { compareImageParity } from './anchors.mjs';
 
-const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation', 'dom-snapshot-observation', 'responsive-observation', 'responsive-observation-index', 'asset-observation', 'asset-observation-index', 'aria-observation', 'aria-observation-index', 'head-observation', 'head-observation-index', 'performance-observation', 'performance-observation-index']);
+const SUPPORTED_KINDS = new Set(['route-inventory', 'route-observation', 'control-observation', 'runtime-class-observation', 'compiled-css-observation', 'request-observation', 'coverage', 'dead-class-audit', 'dead-control-route-audit', 'visual-region-config', 'visual-region-observation', 'visual-region-png', 'motion-observation', 'dom-snapshot-observation', 'responsive-observation', 'responsive-observation-index', 'asset-observation', 'asset-observation-index', 'aria-observation', 'aria-observation-index', 'head-observation', 'head-observation-index', 'performance-observation', 'performance-observation-index', 'screen-config', 'screen-image', 'screen-native', 'screen-reference', 'screen-frames', 'anchor-config', 'anchor-observation', 'anchor-capture-png']);
 const METADATA_KINDS = new Set(['policy-snapshot', 'failure', 'route-failure', 'report', 'report-html']);
 const CONTROL_EFFECT_DIMENSIONS = new Set(['url', 'aria', 'overlay', 'dom', 'style', 'network']);
 const FINDING_SEMANTICS = {
@@ -489,10 +490,55 @@ export function selectControlAudit({ root = process.cwd(), siteKey, measurementR
   return null;
 }
 
+// Screenshot evidence has routes and pixels, nothing else. Controls, classes,
+// and the other live-only modules are not applicable rather than missing.
+const IMAGE_NOT_APPLICABLE = ['controls', 'classes', 'visual-regions', 'motion', 'dom-snapshot', 'responsive', 'assets', 'aria', 'head', 'performance'];
+
+function compareImageRuns({ root, siteKey, sourceManifest, cloneManifest, sourceRunId, cloneRunId, reportRunId }) {
+  const sourceRoutes = readJson(root, siteKey, sourceRunId, 'measurements/routes.json');
+  const cloneRoutes = readJson(root, siteKey, cloneRunId, 'measurements/routes.json');
+  const routeComparison = compareRoutes(sourceRoutes, cloneRoutes, sourceRunId, cloneRunId);
+  // A screenshot of a working page shows no error, so any clone error is new.
+  const shownWorking = { routes: (sourceRoutes.routes ?? []).map((route) => ({ ...route, runtimeErrors: { captured: true, pageErrors: [], consoleErrors: [], consoleWarnings: 0, hydrationErrors: 0 } })) };
+  const runtimeErrorComparison = compareRuntimeErrors(shownWorking, cloneRoutes, sourceRunId, cloneRunId);
+  for (const finding of runtimeErrorComparison.findings) {
+    finding.evidence.source = { ...finding.evidence.source, locator: finding.evidence.source.locator.replace(/\/runtimeErrors$/u, '') };
+  }
+  const imageParity = compareImageParity({ root, siteKey, sourceRunId, cloneRunId, cloneManifest, reportRunId });
+  return {
+    schemaVersion: 1,
+    semantics: FINDING_SEMANTICS,
+    sourceRunId,
+    cloneRunId,
+    evidence: 'image',
+    supportedKinds: [...SUPPORTED_KINDS],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...runtimeErrorComparison.comparatorCoverage, ...imageParity.comparatorCoverage],
+    findings: [...routeComparison.findings, ...runtimeErrorComparison.findings, ...imageParity.findings],
+    imageParityCoverage: imageParity.coverage,
+    imageParity: { pages: imageParity.pages },
+    runtimeErrorCoverage: { ...runtimeErrorComparison.coverage, sourceAssumption: 'screenshots show working pages without errors' },
+    notApplicable: IMAGE_NOT_APPLICABLE,
+    visualArtifacts: imageParity.visualArtifacts,
+    source: { runId: sourceRunId, target: sourceManifest.target, scope: sourceManifest.scope },
+    clone: { runId: cloneRunId, target: cloneManifest.target, scope: cloneManifest.scope },
+    controlAudits: { sourceRunId: null, cloneRunId: null, source: null, clone: null },
+    unsupported: unsupportedKinds(sourceManifest, cloneManifest),
+    coverage: {
+      source: sourceRoutes.routes?.length ?? 0,
+      clone: cloneRoutes.routes?.length ?? 0,
+      sourceRunId,
+      cloneRunId,
+      sourceDetails: readJson(root, siteKey, sourceRunId, 'coverage.json'),
+      cloneDetails: readJson(root, siteKey, cloneRunId, 'coverage.json'),
+    },
+  };
+}
+
 export function compareRuns({ root = process.cwd(), siteKey, sourceRunId, cloneRunId, reportRunId = null, policy = {}, sourceAuditRunId = null, cloneAuditRunId = null } = {}) {
   const sourceManifest = readManifest(root, siteKey, sourceRunId);
   const cloneManifest = readManifest(root, siteKey, cloneRunId);
   if (sourceManifest.status !== 'closed' || cloneManifest.status !== 'closed') throw new Error('Only closed runs can be compared');
+  if (sourceManifest.target?.evidence === 'image') return compareImageRuns({ root, siteKey, sourceManifest, cloneManifest, sourceRunId, cloneRunId, reportRunId });
   const sourceRoutes = readJson(root, siteKey, sourceRunId, 'measurements/routes.json');
   const cloneRoutes = readJson(root, siteKey, cloneRunId, 'measurements/routes.json');
   const sourceControls = readJson(root, siteKey, sourceRunId, 'measurements/controls.json');
@@ -569,6 +615,8 @@ function inferFindingComparator(finding) {
   if (category.startsWith('responsive-')) return comparator('responsive', finding?.comparator?.evidenceClass ?? 'responsive', finding?.policy?.dimension ?? finding?.comparator?.dimension ?? null, finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category.startsWith('asset-')) return comparator('assets', finding?.comparator?.evidenceClass ?? 'asset', finding?.policy?.dimension ?? finding?.comparator?.dimension ?? null, finding?.policy?.mode ?? finding?.comparator?.mode ?? null);
   if (category === 'dom-structure-mismatch') return comparator('dom-snapshot', 'dom-structure', 'structure', 'gate');
+  if (category.startsWith('image-anchor-')) return comparator('image-anchor', 'image-anchor', 'value', finding?.policy?.mode ?? null);
+  if (category.startsWith('image-region-')) return comparator('image-region', 'image-region', 'pixels', finding?.policy?.mode ?? null);
   if (category === 'dom-geometry-mismatch') return comparator('dom-snapshot', 'dom-geometry', 'geometry', 'informational');
   return null;
 }
@@ -592,6 +640,8 @@ function comparatorSubjectsMatch(instrument, expected = {}, actual = {}) {
     && canonicalJson(expected.viewport ?? null) === canonicalJson(actual.viewport ?? null)
     && canonicalJson(expected.features ?? null) === canonicalJson(actual.features ?? null);
   if (instrument === 'assets') return (expected.route ?? null) === (actual.route ?? null);
+  if (instrument === 'image-anchor') return (expected.page ?? null) === (actual.page ?? null) && (expected.anchorId ?? null) === (actual.anchorId ?? null);
+  if (instrument === 'image-region') return (expected.page ?? null) === (actual.page ?? null) && (expected.regionId ?? null) === (actual.regionId ?? null);
   return (expected.route ?? null) === (actual.route ?? null);
 }
 
@@ -658,7 +708,8 @@ export function findingCanClose(previousSummary, report) {
     if (current.instrument !== required.instrument || current.evidenceClass !== required.evidenceClass) return false;
     if ((current.dimension ?? null) !== (required.dimension ?? null)) return false;
     if (required.mode && current.mode && required.mode !== current.mode) return false;
-    if (required.instrument === 'visual-region') {
+    // Pixel and anchor findings close only under the same definition.
+    if (['visual-region', 'image-region', 'image-anchor'].includes(required.instrument)) {
       if (canonicalJson(finding.policy ?? null) !== canonicalJson(current.policy ?? null)) return false;
     }
     return comparatorSubjectsMatch(required.instrument, finding.subject ?? finding, entry.subject ?? {});

@@ -7,6 +7,7 @@ import {
   closeRun,
   canonicalJson,
   createRun,
+  hashJson,
   createRunId,
   ENGINE_VERSION,
   failRun,
@@ -31,6 +32,7 @@ import { ariaIndexEntry, captureAria } from './aria.mjs';
 import { captureHead, headIndexEntry } from './head.mjs';
 import { capturePerformance, performanceIndexEntry } from './performance.mjs';
 import { createRuntimeErrorTracker } from './runtime-errors.mjs';
+import { captureAnchorPages, loadAnchorReference, normalizeAnchorsConfig } from './anchors.mjs';
 import { deploymentFingerprint } from './fingerprint.mjs';
 
 const LOGIN_PATH = /(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/iu;
@@ -414,8 +416,9 @@ const OPTIONAL_ROUTE_MODULES = [
   { module: 'performance', directory: 'performance' },
 ];
 
-function measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets, aria, head, performance }) {
+function measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets, aria, head, performance, anchors }) {
   return {
+    ...(anchors ? { anchors: true } : {}),
     visual: Boolean(normalizedVisualConfig),
     motion: Boolean(motion),
     motionSample: Boolean(motionSample),
@@ -570,6 +573,8 @@ export async function measureTarget({
   performanceMetrics = false,
   routeSource = null,
   resumeRunId = null,
+  anchorsConfig = null,
+  referenceRunId = null,
 } = {}) {
   await runSelfTests();
   if (!siteKey) throw new Error('siteKey is required');
@@ -578,7 +583,11 @@ export async function measureTarget({
   if (!['source', 'clone'].includes(target)) throw new Error(`target must be source or clone, received ${target}`);
   if (authoritativeInventory && inventoryRunId) throw new Error('authoritativeInventory cannot be combined with inventoryRunId');
   const normalizedVisualConfig = visualConfig ? normalizeVisualRegionConfig(visualConfig) : null;
-  const modules = measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets, aria, head, performance: performanceMetrics });
+  const normalizedAnchors = anchorsConfig ? normalizeAnchorsConfig(anchorsConfig) : null;
+  if (normalizedAnchors && target !== 'clone') throw new Error('--anchors measures a clone against an image source run; it does not apply to a source');
+  if (normalizedAnchors && !referenceRunId) throw new Error('--anchors needs --reference-run with the image source run');
+  const anchorReference = normalizedAnchors ? loadAnchorReference(root, siteKey, referenceRunId) : null;
+  const modules = measurementModules({ normalizedVisualConfig, motion, motionSample, domSnapshot, responsive, assets, aria, head, performance: performanceMetrics, anchors: Boolean(normalizedAnchors) });
   const visualConfigSha256 = normalizedVisualConfig ? visualRegionConfigHash(normalizedVisualConfig) : null;
   const visualViewports = normalizedVisualConfig
     ? [...new Map(normalizedVisualConfig.regions.map((region) => [JSON.stringify(region.viewport), region.viewport])).values()]
@@ -620,16 +629,31 @@ export async function measureTarget({
     ...(resumeManifest ? { resumeRunId: resumeManifest.runId, routesReused: [] } : {}),
     ...(routeSource ? { routeSource } : {}),
   };
+  const runTarget = (origin, extra = {}) => ({
+    kind: target,
+    origin,
+    ...extra,
+    profileId,
+    tenant,
+    role,
+    modules,
+    hydrationSelector: hydrationSelector ?? null,
+    ...(measurementViewport ? { viewport: measurementViewport } : {}),
+    ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}),
+    ...(visualConfigSha256 ? { visualConfigSha256 } : {}),
+    ...(normalizedAnchors ? { anchorsConfigSha256: hashJson(normalizedAnchors), referenceRunId: anchorReference.runId } : {}),
+  });
   createRun({
     root,
     siteKey,
     runId,
     kind: target,
-    target: { kind: target, origin: base.origin, profileId, tenant, role, modules, hydrationSelector: hydrationSelector ?? null, ...(measurementViewport ? { viewport: measurementViewport } : {}), ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}), ...(visualConfigSha256 ? { visualConfigSha256 } : {}) },
+    target: runTarget(base.origin),
     scope,
     policySha256: policySha256(policy),
   });
   writeArtifact(root, siteKey, runId, 'policy.json', normalizePolicy(policy), { kind: 'policy-snapshot' });
+  if (normalizedAnchors) writeArtifact(root, siteKey, runId, 'anchors.json', normalizedAnchors, { kind: 'anchor-config' });
   if (normalizedVisualConfig) writeArtifact(root, siteKey, runId, 'visual-regions.json', normalizedVisualConfig, { kind: 'visual-region-config' });
   let managedServer = null;
   let context = null;
@@ -638,7 +662,7 @@ export async function measureTarget({
     if (target === 'clone' && server === 'managed') {
       managedServer = await startManagedCloneServer({ root, command: serverCommand });
       baseUrl = managedServer.url;
-      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, server: { mode: 'managed', command: serverCommand }, profileId, tenant, role, modules, hydrationSelector: hydrationSelector ?? null, ...(measurementViewport ? { viewport: measurementViewport } : {}), ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}), ...(visualConfigSha256 ? { visualConfigSha256 } : {}) } });
+      updateRun(root, siteKey, runId, { target: runTarget(new URL(baseUrl).origin, { server: { mode: 'managed', command: serverCommand } }) });
     }
     if (target === 'source' && !profileDir) {
       throw preconditionError('Source measurement requires a persistent browser profile', runId);
@@ -874,6 +898,39 @@ export async function measureTarget({
         assetTracker?.stop();
       }
     }
+    // Anchor pages are captured at the reference's own scale, each in a fresh
+    // context, after the route sweep.
+    let anchorPages = null;
+    if (normalizedAnchors) {
+      const anchorBrowser = context.__clonerBrowser ?? await launchBrowser({ headless: true });
+      try {
+        anchorPages = await captureAnchorPages(anchorBrowser, {
+          baseUrl,
+          config: normalizedAnchors,
+          reference: anchorReference,
+          target,
+          policy,
+          prepare: (anchorPage) => waitForHydration(anchorPage, { hydrationSelector, timeoutMs: hydrationTimeoutMs }),
+        });
+      } finally {
+        if (!context.__clonerBrowser) await anchorBrowser.close().catch(() => {});
+      }
+      for (const entry of anchorPages) {
+        if (entry.image) writeArtifact(root, siteKey, runId, entry.artifactPath, entry.image, { kind: 'anchor-capture-png', visibility: 'private' });
+      }
+      writeArtifact(root, siteKey, runId, 'measurements/anchors.json', {
+        schemaVersion: 1,
+        kind: 'anchor-observation',
+        referenceRunId: anchorReference.runId,
+        configSha256: hashJson(normalizedAnchors),
+        pages: anchorPages.map((entry) => {
+          const persisted = { ...entry };
+          delete persisted.image;
+          return persisted;
+        }),
+        complete: anchorPages.every((entry) => entry.status === 'captured'),
+      }, { kind: 'anchor-observation', visibility: 'private' });
+    }
     const audit = auditDeadRuntimeClasses(classObservations, { runId, scope: 'requested-routes' });
     const completedScope = { ...scope, routesCompleted: [...scope.routesCompleted], routesFailed: [...scope.routesFailed] };
     updateRun(root, siteKey, runId, { scope: completedScope });
@@ -1029,6 +1086,11 @@ export async function measureTarget({
             && assetObservations.every(({ observation }) => observation.complete === true),
         } : {}),
         runtimeErrorRoutesCaptured: routeRecords.filter((entry) => entry.runtimeErrors?.captured === true).length,
+        ...(anchorPages ? {
+          anchorPagesConfigured: anchorPages.length,
+          anchorPagesCaptured: anchorPages.filter((entry) => entry.status === 'captured').length,
+          anchorCoverageComplete: anchorPages.every((entry) => entry.status === 'captured'),
+        } : {}),
         ...(aria ? {
           ariaRoutesCaptured: ariaObservations.length,
           ariaCoverageComplete: ariaObservations.length === routeRecords.length && ariaObservations.every(({ observation }) => observation.complete === true),

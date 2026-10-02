@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { launchBrowser } from './browser.mjs';
 import { findingEventsFromReport } from './diff.mjs';
+import { createRaster, rasterFromPng, toPng } from './image.mjs';
 import { readArtifact } from './run-store.mjs';
 import { startFixtureServer } from './test-app/server.mjs';
 
@@ -14,6 +16,8 @@ const ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const CLI = join(ROOT, 'tools', 'cloner', 'cli.mjs');
 const SITE = 'fixture.local-0.9';
 const ROUTES = ['/home', '/noise', '/incomplete-css', '/destination'];
+const SCREEN_SITE = 'fixture-screens';
+const SCREEN_SCALE = 1.3583;
 
 function runCli(root, args) {
   return new Promise((resolveResult, reject) => {
@@ -54,6 +58,25 @@ async function audit(root, policyPath, target, runId, extra = []) {
   const result = await runCli(root, args);
   assert.equal(result.code, 0, `${target} audit failed:\n${result.stderr}`);
   return result.json;
+}
+
+// A presentation shot: the page rendered at a fractional device scale and
+// pasted onto a grey backdrop, plus the DOM boxes that are the ground truth.
+async function presentationShot(url, { scale, viewport, offset }) {
+  const browser = await launchBrowser({ headless: true });
+  try {
+    const context = await browser.newContext({ viewport, deviceScaleFactor: scale });
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: 'networkidle' });
+    const shot = rasterFromPng(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
+    const truth = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[aria-label], h1')]
+      .map((element) => [element.getAttribute('aria-label') ?? element.tagName.toLowerCase(), element.getBoundingClientRect().toJSON()])));
+    const canvas = createRaster(shot.width + 2 * offset[0], shot.height + 2 * offset[1], [194, 194, 194, 255]);
+    for (let y = 0; y < shot.height; y += 1) shot.data.copy(canvas.data, ((y + offset[1]) * canvas.width + offset[0]) * 4, y * shot.width * 4, (y + 1) * shot.width * 4);
+    return { png: toPng(canvas), truth };
+  } finally {
+    await browser.close();
+  }
 }
 
 async function main() {
@@ -165,6 +188,70 @@ async function main() {
     const formsClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'clone', '--run', formsMeasurement.json.runId, ...commonArgs(parityRoot, policyPath)]);
     assert.equal(formsClasses.code, 0, formsClasses.stderr);
     assert.deepEqual(formsClasses.json.audit.routes.find((entry) => entry.route === '/forms').deadClasses, [], 'SVG and escaped leading-digit classes must resolve');
+
+    // Screenshot mode against ground truth: ingest a presentation shot, probe
+    // it against DOM boxes, then measure clones with anchors at the shot's
+    // fractional scale and diff them.
+    const screensDirectory = join(parityRoot, 'screens');
+    mkdirSync(screensDirectory, { recursive: true });
+    const { png, truth } = await presentationShot(`${source.url}/forms`, { scale: SCREEN_SCALE, viewport: { width: 1440, height: 1024 }, offset: [60, 60] });
+    writeFileSync(join(screensDirectory, 'forms.png'), png);
+    writeFileSync(join(screensDirectory, 'screens.json'), JSON.stringify({ schemaVersion: 1, site: 'fixture', designWidth: 1440, screens: [{ image: 'forms.png', page: 'forms', route: '/forms', kind: 'presentation' }] }));
+    const ingested = await runCli(parityRoot, ['ingest', '--root', parityRoot, '--screens', join(screensDirectory, 'screens.json'), '--site', SCREEN_SITE, '--inventory']);
+    assert.equal(ingested.code, 0, ingested.stderr);
+    assert.ok(Math.abs(ingested.json.screens[0].scale - SCREEN_SCALE) <= SCREEN_SCALE * 0.002, `ingested scale ${ingested.json.screens[0].scale}`);
+    const imageRun = ingested.json.runId;
+    // Chromium snaps boxes to device pixels and spreads a thin border over two
+    // of them, so a DOM box matches the rendered edge to one device pixel.
+    const devicePixel = 1 / SCREEN_SCALE;
+    const button = truth['Open dialog'];
+    const probed = await runCli(parityRoot, ['probe', 'edges', '--root', parityRoot, '--site', SCREEN_SITE, '--page', 'forms', '--axis', 'x', '--at', String(button.y + button.height / 2), '--from', String(button.x - 6), '--to', String(button.right + 2)]);
+    assert.equal(probed.code, 0, probed.stderr);
+    assert.ok(Math.abs(probed.json.edges[0].position - button.x) <= devicePixel, `probe ${probed.json.edges[0].position} vs DOM ${button.x}`);
+    assert.ok(Math.abs(probed.json.edges.at(-1).position - button.right) <= devicePixel, `probe ${probed.json.edges.at(-1).position} vs DOM ${button.right}`);
+    const upload = truth['Upload file'];
+    const heading = truth.h1;
+    const anchorsPath = join(screensDirectory, 'anchors.json');
+    writeFileSync(anchorsPath, JSON.stringify({
+      schemaVersion: 1,
+      pages: [{
+        page: 'forms',
+        viewport: { width: 1440, height: 1024 },
+        anchors: [
+          { id: 'upload-left', probe: { type: 'edges', axis: 'x', at: upload.y + upload.height / 2, from: upload.x - 6, to: upload.x + 6 } },
+          // Windows leave room for the edge to move but stop short of the
+          // icon that follows the button.
+          { id: 'dialog-right', probe: { type: 'edges', axis: 'x', at: button.y + button.height / 2, from: button.right - 4, to: button.right + 3.5 }, pick: 'edges.-1.position' },
+          { id: 'heading-ink-left', probe: { type: 'box', box: [heading.x - 8, heading.y - 4, heading.right + 8, heading.bottom + 4] }, pick: 'ink.0' },
+          { id: 'heading-colour', probe: { type: 'color', box: [heading.x, heading.y, heading.right, heading.bottom], mode: 'dark' }, mode: 'informational' },
+        ],
+        regions: [{ id: 'buttons', box: [upload.x - 4, upload.y - 4, button.right + 4, button.bottom + 4], mode: 'gate', threshold: 0.01 }],
+      }],
+    }));
+    const anchoredClone = await runCli(parityRoot, ['measure', '--target', 'clone', '--url', clone.url, '--site', SCREEN_SITE, '--anchors', anchorsPath, '--reference-run', imageRun, ...['--policy', policyPath, '--root', parityRoot]]);
+    assert.equal(anchoredClone.code, 0, anchoredClone.stderr);
+    assert.equal(anchoredClone.json.coverage.measurement.anchorCoverageComplete, true);
+    const imageDiff = await runCli(parityRoot, ['diff', '--root', parityRoot, '--site', SCREEN_SITE, '--source', imageRun, '--clone', anchoredClone.json.runId, '--policy', policyPath]);
+    assert.equal(imageDiff.code, 0, imageDiff.stderr);
+    assert.equal(imageDiff.json.imageParityCoverage.complete, true);
+    assert.deepEqual(imageDiff.json.findings.filter((finding) => finding.status === 'open'), [], 'a faithful clone must pass image parity');
+    assert.match(readFileSync(imageDiff.json.reportHtmlPath, 'utf8'), /Image parity/u);
+    const shifted = await startFixtureServer({ mode: 'clone', repaired: true, shift: 2 });
+    try {
+      const shiftedClone = await runCli(parityRoot, ['measure', '--target', 'clone', '--url', shifted.url, '--site', SCREEN_SITE, '--anchors', anchorsPath, '--reference-run', imageRun, '--policy', policyPath, '--root', parityRoot]);
+      assert.equal(shiftedClone.code, 0, shiftedClone.stderr);
+      const shiftedDiff = await runCli(parityRoot, ['diff', '--root', parityRoot, '--site', SCREEN_SITE, '--source', imageRun, '--clone', shiftedClone.json.runId, '--policy', policyPath]);
+      assert.equal(shiftedDiff.code, 0, shiftedDiff.stderr);
+      const moved = shiftedDiff.json.findings.filter((finding) => finding.category === 'image-anchor-mismatch');
+      assert.deepEqual(moved.map((finding) => finding.subject.anchorId).sort(), ['dialog-right', 'heading-ink-left', 'upload-left']);
+      assert.ok(moved.every((finding) => Math.abs(finding.observed.delta - 2) <= 0.3), `shift deltas ${moved.map((finding) => finding.observed.delta)}`);
+      assert.ok(shiftedDiff.json.findings.some((finding) => finding.category === 'image-region-mismatch' && finding.status === 'open'));
+    } finally {
+      await shifted.close();
+    }
+    const imageAudit = await runCli(parityRoot, ['audit', 'dead-controls', '--root', parityRoot, '--site', SCREEN_SITE, '--target', 'source', '--run', imageRun, '--profile', profile]);
+    assert.notEqual(imageAudit.code, 0);
+    assert.match(imageAudit.stderr, /holds screenshot evidence/u);
 
     const modules = ['--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot', '--aria', '--head', '--performance'];
     const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', ...modules]);

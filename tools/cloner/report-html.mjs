@@ -9,6 +9,7 @@ const COVERAGE_FIELDS = [
   ['Head metadata', 'headCoverage'],
   ['Load performance', 'performanceCoverage'],
   ['Runtime errors', 'runtimeErrorCoverage'],
+  ['Image parity', 'imageParityCoverage'],
 ];
 
 export function escapeHtml(value) {
@@ -61,6 +62,35 @@ function coverageRows(report) {
       return `<tr><th scope="row">${escapeHtml(label)}</th><td>${coverage.complete ? 'complete' : 'incomplete'}</td><td>${escapeHtml(details)}</td></tr>`;
     })
     .join('\n');
+}
+
+function formatValue(value) {
+  return value === null || value === undefined ? '—' : String(value);
+}
+
+// Screenshot comparisons: the reference and clone side by side with their
+// difference (a visual aid, not a score), then every anchor and region.
+function imageParitySection(report, reportRunId) {
+  const pages = report.imageParity?.pages ?? [];
+  if (!pages.length) return '';
+  const sections = pages.map((page) => {
+    const views = page.views && reportRunId
+      ? `<div class="images">${image('Reference', { runId: reportRunId, artifact: page.views.reference })}${image('Clone', { runId: reportRunId, artifact: page.views.clone })}${image('Difference', { runId: reportRunId, artifact: page.views.diff })}</div>`
+      : '';
+    const anchorRows = page.anchors.map((anchor) => `<tr><td>${escapeHtml(anchor.id)}</td><td>${escapeHtml(formatValue(anchor.reference))}</td><td>${escapeHtml(formatValue(anchor.clone))}</td><td>${escapeHtml(formatValue(anchor.delta))}</td><td>${escapeHtml(anchor.tolerance)}</td><td>${anchor.within ? 'within' : `<strong>${escapeHtml(anchor.mode === 'gate' ? 'gate' : 'outside')}</strong>`}</td></tr>`).join('\n');
+    const regionRows = page.regions.map((region) => `<tr><td>${escapeHtml(region.id)}</td><td>${escapeHtml(region.mode)}</td><td>${escapeHtml(typeof region.diffRatio === 'number' ? `${(region.diffRatio * 100).toFixed(2)} %` : '—')}</td><td>${region.equal ? 'within' : '<strong>differs</strong>'}</td></tr>`).join('\n');
+    return `<section class="route"><h3>${escapeHtml(page.page)} <span class="muted">${escapeHtml(page.route ?? '')}</span></h3>
+${page.complete ? '' : '<p class="muted">Not compared: the capture or the reference is missing. See the findings.</p>'}
+${views}
+${anchorRows ? `<div class="scroll"><table><thead><tr><th>Anchor</th><th>Reference</th><th>Clone</th><th>Δ</th><th>Tolerance</th><th>Result</th></tr></thead><tbody>\n${anchorRows}\n</tbody></table></div>` : ''}
+${regionRows ? `<div class="scroll"><table><thead><tr><th>Region</th><th>Mode</th><th>Different pixels</th><th>Result</th></tr></thead><tbody>\n${regionRows}\n</tbody></table></div>` : ''}
+</section>`;
+  }).join('\n');
+  return `<section><h2>Image parity</h2>
+<p>Anchors are probes run identically on the reference and on the clone captured at the reference scale. Differences are in CSS pixels, or RGB distance for colours. The page images are a visual aid, not a score.</p>
+${report.notApplicable ? `<p class="muted">Not applicable to screenshot evidence: ${escapeHtml(report.notApplicable.join(', '))}.</p>` : ''}
+${sections}
+</section>`;
 }
 
 function rightsSection(assetRights) {
@@ -137,6 +167,7 @@ ${coverageRows(report)}
 <section><h2>Findings</h2>
 ${findingSections || '<p>No findings. Coverage above shows what was compared.</p>'}
 </section>
+${imageParitySection(report, reportRunId)}
 ${rightsSection(assetRights)}
 </main>
 </body>

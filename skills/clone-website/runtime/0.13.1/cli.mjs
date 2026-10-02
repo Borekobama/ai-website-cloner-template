@@ -38,6 +38,7 @@ import {
 import { loadPolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
 import { normalizeVisualRegionConfig } from './visual-regions.mjs';
+import { loadAnchorReference, normalizeAnchorsConfig } from './anchors.mjs';
 import {
   closeRun,
   createRun,
@@ -108,6 +109,9 @@ Measure options:
   --aria                        Capture accessibility-tree landmarks, headings, and role counts
   --head                        Capture head metadata: title, description, canonical, robots, hreflang, JSON-LD, social, icons
   --performance                 Capture informational load metrics: LCP, CLS, and transfer bytes
+  --anchors <path>               Image parity config: capture pages at the reference scale and
+                                 evaluate anchors (clone only; routes default to the reference)
+  --reference-run <run-id|current>  Image source run from ingest for --anchors (default: current)
 
 Ingest options:
   --screens <path>               screens.json that lists the screenshots (required)
@@ -349,7 +353,10 @@ async function commandMeasure(options) {
   const url = required(options, 'url');
   const target = required(options, 'target');
   const root = options.root ? String(options.root) : process.cwd();
+  if (options.anchors && !options.site) throw new Error('--anchors needs --site with the site key of the image source run');
   const siteKey = options.site ? String(options.site) : siteKeyFromUrl(url);
+  const anchorsConfig = options.anchors ? normalizeAnchorsConfig(String(options.anchors)) : null;
+  const referenceRunId = anchorsConfig ? resolveRunId(root, siteKey, String(options['reference-run'] ?? 'current'), 'source') : null;
   const policy = loadPolicy(options.policy, root, siteKey);
   const visualConfig = options['visual-regions'] ? normalizeVisualRegionConfig(String(options['visual-regions'])) : null;
   const inventoryRunId = options['inventory-run']
@@ -357,6 +364,7 @@ async function commandMeasure(options) {
     : null;
   let routes = routesFrom(options);
   let routeSource = null;
+  if (anchorsConfig && !routes.length && !options.sitemap) routes = loadAnchorReference(root, siteKey, referenceRunId).routes;
   if (options.sitemap) {
     if (routes.length) throw new Error('Use either --routes or --sitemap, not both');
     const sitemap = await routesFromSitemap(url, { sitemapUrl: options.sitemap === true ? null : String(options.sitemap) });
@@ -390,6 +398,8 @@ async function commandMeasure(options) {
     aria: Boolean(options.aria),
     head: Boolean(options.head),
     performanceMetrics: Boolean(options.performance),
+    anchorsConfig,
+    referenceRunId,
   });
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, ...(routeSource ? { routeSource } : {}), coverage: result.coverage });
 }
@@ -623,6 +633,8 @@ function commandDiff(options) {
     ...(report.ariaCoverage?.configured ? { aria: report.ariaCoverage } : {}),
     ...(report.headCoverage?.configured ? { head: report.headCoverage } : {}),
     ...(report.performanceCoverage?.configured ? { performance: report.performanceCoverage } : {}),
+    ...(report.imageParityCoverage?.configured ? { imageParity: report.imageParityCoverage } : {}),
+    ...(report.notApplicable ? { notApplicable: report.notApplicable } : {}),
     runtimeErrors: report.runtimeErrorCoverage,
     scope: 'comparison',
   }, { kind: 'coverage' });
