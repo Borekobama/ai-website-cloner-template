@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-02
+
+Screenshot mode: a clone can now be built and measured from screenshots alone,
+or from a live site plus screenshots, with the same immutable runs, diffs,
+reports, and ledger as a live clone.
+
 ### Added
+- Screenshot-mode reference (`docs/research/SCREENSHOT_MODE_REFERENCE.md`) and templates in `docs/research/templates/`: DESIGN, component spec, page topology, behaviours, artifact manifest, parity report, and examples of screens, anchors, font samples, and icon boxes. The portable skill ships both as references, and the skill gains an evidence-modes section (live, screenshots, mixed)
+- `fonts fit` identifies the family, weight, and size of one-line text samples by rendering candidates in real Chromium DOM at the screenshot's own device scale, so optical sizing matches. Candidates are 30 common Google Fonts (Inter with its optical-size axis), installed fonts (`--families local:<name>`), and font files (`--font-dir`). Known fonts, resampled and compressed like a presentation shot, are recovered at their exact size. Each sample keeps its own winner in `fonts.json` and `TYPE_SCALE.md`
+- `icons match` ranks icons from Iconify sets (lucide, hugeicons, tabler, heroicons, and ph by default; cached in `.cloner-runtime/icon-cache/`) by shape for each icon box, and records each set's licence. Icon markup is sanitized and rendered with JavaScript disabled and all network requests blocked
+- `analyze palette` drafts colour tokens from flat surfaces and text stroke cores through the existing token renderers; `analyze layout` drafts a skeleton of one-colour panels with their gaps, insets, and radii in CSS pixels. Both are builder drafts, not evidence
+- `assets extract` crops a CSS box from the native screenshot, fills occluded boxes by coarse-to-fine diffusion, writes PNG, JPEG, or WebP, and records the crop as rights-unverified in `ARTIFACT_MANIFEST.md` and `extracted-assets.json`. Logos and brand marks need `--approved`. `rights` lists these crops for an image run
+- `probe box` (and every tool built on it) warns when the box border is not plain background
 - Image parity: `measure --target clone --anchors anchors.json --reference-run <image-run>` captures each configured page at the reference's own (often fractional) device scale and evaluates anchors, named probes with a tolerance. `diff` against an image source run computes the reference values from the stored native crops and reports `image-anchor-mismatch`, `image-anchor-missing`, and `image-region-mismatch` findings; an edge anchor that lands on a different edge is a mismatch even when its position is within tolerance. Regions compare CSS boxes pixel by pixel with masks and default to informational; a region that covers most of the page cannot gate. Controls, classes, and other live-only modules are reported as not applicable, and clone runtime errors still gate. `report.html` gains an Image parity section with reference, clone, and difference views and an anchor table
 - `ingest --screens screens.json` turns screenshots into a closed source run with image evidence: originals, native frame crops, normalized 1x references, `measurements/frames.json` (kind, backdrop, frame, scale and its method and confidence, CSS geometry, warnings), and a route inventory. Presentation shots, raw screenshots, design exports, and cropped zooms with anchors are supported; `--inventory` sets `source-current`. Readable copies go to `docs/design-references/<site>/<page>/`. A screen without a resolvable scale stops ingest before any run exists
 - `probe edges|runs|box|color|radius` measures an ingested screen in CSS pixels, or an image file in image pixels (`--image`) to find anchors before ingest
@@ -20,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `audit` and `drift` refuse image source runs with a clear message; they need a live target
+- `measure --anchors` resolves its path against `--root`, like `ingest --screens`
+- The unit tests that need Chromium skip when it is not installed; the integration job runs them
 
 ### Fixed
 - The clone hydration gate waits for `networkidle` and polls for hydration evidence, in measurement, in the audit baseline, and in every clone trial. Development servers that hydrate late no longer fail the audit or produce dead controls

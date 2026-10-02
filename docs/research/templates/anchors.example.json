@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "pages": [
+    {
+      "page": "overview",
+      "viewport": { "width": 1440, "height": 1024 },
+      "anchors": [
+        { "id": "sidebar-right", "probe": { "type": "edges", "axis": "x", "at": 500, "from": 248, "to": 264 }, "pick": "edges.0.position", "tolerance": 1 },
+        { "id": "title-left", "probe": { "type": "box", "box": [284, 24, 560, 60] }, "pick": "ink.0", "tolerance": 1 },
+        { "id": "title-cap-top", "probe": { "type": "runs", "axis": "y", "band": [284, 560], "range": [20, 64] }, "pick": "runs.0.start", "tolerance": 1 },
+        { "id": "card-radius", "probe": { "type": "radius", "box": [272, 80, 696, 396], "corner": "tl" }, "pick": "radius", "tolerance": 1 },
+        { "id": "canvas-colour", "probe": { "type": "color", "box": [258, 420, 270, 600] }, "pick": "median", "tolerance": 4 },
+        { "id": "title-colour", "probe": { "type": "color", "box": [284, 24, 560, 60], "mode": "dark" }, "pick": "ink", "tolerance": 12, "mode": "informational" }
+      ],
+      "regions": [
+        { "id": "sidebar-nav", "box": [16, 96, 256, 520], "mode": "gate", "threshold": 0.02 },
+        { "id": "featured-card", "box": [272, 80, 696, 396], "masks": [[280, 88, 688, 388]] }
+      ]
+    },
+    {
+      "page": "project-actions-open",
+      "viewport": { "width": 1440, "height": 1024 },
+      "state": { "action": "click", "selector": "[data-testid=project-actions]" },
+      "anchors": [
+        { "id": "menu-left", "probe": { "type": "edges", "axis": "x", "at": 180, "from": 1180, "to": 1240 }, "tolerance": 1 }
+      ]
+    }
+  ]
+}

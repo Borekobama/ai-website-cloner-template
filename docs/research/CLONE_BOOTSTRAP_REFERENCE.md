@@ -5,6 +5,11 @@ asset download. It preserves detailed reconstruction contracts that are kept out
 of the shorter parity-oriented skill. Revisit-only parity work does not need to
 repeat these steps unless source drift requires new reconstruction.
 
+When there is no live source, only screenshots, follow
+`SCREENSHOT_MODE_REFERENCE.md` (next to this file) instead of the
+reconnaissance and download steps below. The fidelity and scope defaults still
+apply.
+
 ## Default fidelity and scope
 
 Unless the user says otherwise, clone the page that each target URL resolves to

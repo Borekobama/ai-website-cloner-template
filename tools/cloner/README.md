@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.13.1
+# Cloner parity CLI v0.14.0
 
-The cloner CLI is the repository-owned v0.13.1 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.14.0 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -263,11 +263,62 @@ Registries without such a type are not compared. A complete re-audit closes a
 finding that no longer reproduces. Dead runtime-class findings also carry a
 `detail.reason`: `undefined-variant` when no compiled class uses that variant,
 `variant-class-not-generated` when the variant exists but this class was never
-generated (usually a dynamically built class name), or `missing-css`.
+generated (usually a dynamically built class name), `split-arbitrary-value`
+when a space inside an arbitrary value split one class into several, or
+`missing-css`.
+
+The dead-controls audit fills text fields with a valid probe value, picks
+another option in a select, and listens for a file chooser around each click.
+A value, selection, or checked state that sticks is `input`; an opened chooser
+is `file-chooser`; a control inside a closed `<dialog>` or popover is
+`inert-overlay`. Current-page links (`aria-current`) and checked radios are
+`already-active`. Clone pages, the audit baseline, and every clone trial wait
+for hydration evidence (`--hydration-timeout <ms>`, default 10000). A
+development server hydrates late, so measure and audit a production build:
+`--server managed --server-command start` builds the app, starts it on a free
+port, and stops it afterwards; `audit dead-controls` accepts the same options.
+
+## Screenshot evidence
+
+When there is no live source, screenshots are the evidence. The workflow and
+its rules are in `docs/research/SCREENSHOT_MODE_REFERENCE.md`; templates are in
+`docs/research/templates/`.
+
+```bash
+npm run cloner -- probe edges --image zoom.webp --axis x --at 800 --from 90 --to 700
+npm run cloner -- ingest --screens screens.json --inventory
+npm run cloner -- probe box --site permitly-screens-caed4793 --page overview --box 284,24,560,60
+npm run cloner -- analyze palette --site permitly-screens-caed4793
+npm run cloner -- analyze layout --site permitly-screens-caed4793
+npm run cloner -- fonts fit --site permitly-screens-caed4793 --samples fonts.samples.json
+npm run cloner -- icons match --site permitly-screens-caed4793 --boxes icons.boxes.json
+npm run cloner -- assets extract --site permitly-screens-caed4793 --page overview --box 280,88,688,388 --name street.jpg --kind photo --occlude "294,203,674,374"
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site permitly-screens-caed4793 --anchors anchors.json --reference-run "$IMAGE_RUN"
+npm run cloner -- diff --site permitly-screens-caed4793 --source "$IMAGE_RUN" --clone "$CLONE_RUN"
+```
+
+- `ingest` decodes each screenshot (PNG directly; WebP, JPEG, AVIF, GIF, and
+  colour-profiled PNG through Chromium, converted to sRGB), finds the app frame
+  and its scale, and writes a closed source run with `target.evidence: "image"`:
+  originals, native frame crops, 1x references, `measurements/frames.json`, a
+  route inventory, and coverage. A screen without a resolvable scale stops
+  ingest before any run exists.
+- Probes take and return CSS pixels of the normalized frame and measure on
+  native pixels. Edges use the area method, which is exact for antialiased
+  edges.
+- `analyze`, `fonts`, `icons`, and `assets` write builder drafts beside the
+  research docs, never into the run store. Every extracted asset is recorded as
+  rights-unverified, and `rights` lists them for an image run.
+- `measure --anchors` captures each configured page of the clone at the
+  reference's own device scale and evaluates the anchors. `diff` against an
+  image run compares anchors and configured regions, reports live-only modules
+  as not applicable, and still gates clone runtime errors. There is no
+  whole-page score: the page images in `report.html` are a visual aid, and a
+  region that covers most of the page cannot gate.
 
 `node scripts/sync-skills.mjs` also generates the portable skill in
-`skills/clone-website/`: the portable `SKILL.md`, the bootstrap reference, a
-launcher, and a copy of these runtime modules pinned to this repository's
+`skills/clone-website/`: the portable `SKILL.md`, the bootstrap and screenshot
+references with their templates, a launcher, and a copy of these runtime modules pinned to this repository's
 lockfile. The launcher installs that runtime once under
 `~/.skills-manager/runtime-cache/clone-website/<version>/` and records the
 bundle hash in every run manifest. CI fails when the bundle is out of date, so

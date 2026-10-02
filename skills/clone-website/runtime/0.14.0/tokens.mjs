@@ -106,12 +106,13 @@ export function extractDesignTokens(observations = [], { runId = null, siteKey =
   };
 }
 
-function table(rows, heading) {
+function table(rows, heading, countLabel = 'Nodes') {
   if (!rows.length) return `_No ${heading.toLowerCase()} observed._\n`;
-  return `| ${heading} | Nodes |\n| --- | ---: |\n${rows.map((row) => `| \`${String(row.value).replace(/\|/gu, '\\|')}\` | ${row.count} |`).join('\n')}\n`;
+  return `| ${heading} | ${countLabel} |\n| --- | ---: |\n${rows.map((row) => `| \`${String(row.value).replace(/\|/gu, '\\|')}\` | ${row.count} |`).join('\n')}\n`;
 }
 
 export function renderDesignTokensMarkdown(tokens) {
+  const image = tokens.evidence === 'image';
   const sections = [
     ['Text colors', tokens.colors.text],
     ['Surface colors', tokens.colors.surface],
@@ -128,11 +129,15 @@ export function renderDesignTokensMarkdown(tokens) {
   return [
     '# Design tokens',
     '',
-    `Derived from DOMSnapshot evidence in run \`${tokens.sourceRunId}\` for ${tokens.routes.length} route(s) and ${tokens.nodesAnalyzed} rendered nodes.`,
-    'This is a builder contract, not measurement evidence. Values are ranked by how many rendered nodes use them.',
+    image
+      ? `Derived from screenshot pixels in image run \`${tokens.sourceRunId}\` for ${tokens.routes.length} page(s); counts are CSS pixels.`
+      : `Derived from DOMSnapshot evidence in run \`${tokens.sourceRunId}\` for ${tokens.routes.length} route(s) and ${tokens.nodesAnalyzed} rendered nodes.`,
+    image
+      ? 'This is a builder contract, not measurement evidence. Surface colours come from flat areas and text colours from stroke cores; type, radii, and spacing come from `fonts fit` and `analyze layout`.'
+      : 'This is a builder contract, not measurement evidence. Values are ranked by how many rendered nodes use them.',
     'Rename tokens by role before use, and re-check the source when a value looks wrong.',
     '',
-    ...sections.flatMap(([heading, rows]) => [`## ${heading}`, '', table(rows, heading)]),
+    ...sections.flatMap(([heading, rows]) => [`## ${heading}`, '', table(rows, heading, image ? 'Pixels' : 'Nodes')]),
   ].join('\n');
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from './args.mjs';
 import { classifyAssetRights } from './asset-rights.mjs';
 import { hydrateAssetEvidence } from './assets.mjs';
@@ -12,6 +12,10 @@ import { routesFromSitemap } from './head.mjs';
 import { decodeImage, rasterFromPng } from './image.mjs';
 import { ingestScreens } from './ingest.mjs';
 import { probeColor, probeEdges, probeInkBox, probeInkRuns, probeRadius } from './probes.mjs';
+import { analyzeLayout, analyzePalette, renderLayoutMarkdown } from './analyze.mjs';
+import { assertExtractionAllowed, extractAsset, recordExtractedAsset } from './extract.mjs';
+import { DEFAULT_FONT_CANDIDATES, fitFonts, renderTypeScaleMarkdown } from './fonts.mjs';
+import { DEFAULT_ICON_SETS, matchIcons } from './icons.mjs';
 import { safeUrl } from './redact.mjs';
 import { renderReportHtml } from './report-html.mjs';
 import { extractDesignTokens, renderDesignTokensMarkdown, renderThemeCss } from './tokens.mjs';
@@ -55,7 +59,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.13.1
+AI Website Cloner parity CLI v0.14.0
 
 Usage:
   npm run cloner -- <command> [options]                     Repository copy
@@ -65,6 +69,10 @@ Commands:
   measure                         Capture a source or clone into a new immutable run
   ingest                          Measure screenshots into a new immutable image source run
   probe edges|runs|box|color|radius  Measure a screenshot or an ingested screen
+  analyze palette|layout          Draft colour tokens or a layout skeleton from an image run
+  fonts fit                       Identify font family, weight, and size of sample text lines
+  icons match                     Rank icons from public sets for icons in the screenshots
+  assets extract                  Crop an asset from a screenshot, with occluded areas filled
   diff                            Compare two immutable runs; also writes report.html
   audit dead-controls             Audit controls with Playwright actionability checks
   audit dead-classes              Audit route-scoped runtime classes against compiled CSS
@@ -127,6 +135,22 @@ Probe options:
   box     --box <x0,y0,x1,y1> [--mode dark|light] [--threshold <n>]
   color   --box <x0,y0,x1,y1> [--mode flat|dark|light] [--threshold <n>]
   radius  --box <x0,y0,x1,y1> --corner tl|tr|bl|br [--max-radius <n>]
+
+Analyze and asset options (image source runs):
+  --site <site-key>              Site namespace of the image source run (required)
+  --run <run-id|current>         Image source run (default: current)
+  --page <key>                   Page to crop from (assets extract)
+  --box <x0,y0,x1,y1>            CSS box to crop (assets extract)
+  --name <file.png|jpg|webp>     Output file name (assets extract)
+  --kind photo|avatar|illustration|texture|logo|brand-mark  What the crop shows (assets extract)
+  --occlude "<x0,y0,x1,y1;...>"  CSS boxes drawn over the asset, filled by diffusion
+  --out <path>                   Output path (default: public/sites/<site>/<page>/<name>)
+  --approved                     The user approved copying a logo or brand mark
+  --samples <path>               fonts fit: JSON list of { id, page, text, box, mode?, tracking?, weightHint? }
+  --families <a,b,...>           fonts fit: candidate families (local:<name> for installed fonts)
+  --font-dir <path>              fonts fit: also try the font files in this directory
+  --boxes <path>                 icons match: JSON list of { id, page, box, mode? }
+  --sets <prefix,...>            icons match: Iconify sets (default: lucide,hugeicons,tabler,heroicons,ph)
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -355,7 +379,8 @@ async function commandMeasure(options) {
   const root = options.root ? String(options.root) : process.cwd();
   if (options.anchors && !options.site) throw new Error('--anchors needs --site with the site key of the image source run');
   const siteKey = options.site ? String(options.site) : siteKeyFromUrl(url);
-  const anchorsConfig = options.anchors ? normalizeAnchorsConfig(String(options.anchors)) : null;
+  // Like --screens, the anchors file is relative to --root.
+  const anchorsConfig = options.anchors ? normalizeAnchorsConfig(resolve(root, String(options.anchors))) : null;
   const referenceRunId = anchorsConfig ? resolveRunId(root, siteKey, String(options['reference-run'] ?? 'current'), 'source') : null;
   const policy = loadPolicy(options.policy, root, siteKey);
   const visualConfig = options['visual-regions'] ? normalizeVisualRegionConfig(String(options['visual-regions'])) : null;
@@ -864,6 +889,14 @@ function commandRights(options) {
   const root = options.root ? String(options.root) : process.cwd();
   const siteKey = required(options, 'site');
   const runId = resolveRunId(root, siteKey, required(options, 'run'), options.target ?? 'source');
+  if (readManifest(root, siteKey, runId).target?.evidence === 'image') {
+    // Screenshots have no downloadable assets; crops made from them do.
+    const recordsPath = join(dirname(parityRoot(root, siteKey)), 'extracted-assets.json');
+    const assets = existsSync(recordsPath) ? JSON.parse(readFileSync(recordsPath, 'utf8')) : [];
+    const summary = Object.fromEntries([...new Set(assets.map((asset) => asset.kind))].map((kind) => [kind, assets.filter((asset) => asset.kind === kind).length]));
+    jsonOutput({ runId, siteKey, evidence: 'image', summary, assets });
+    return;
+  }
   const rights = sourceAssetRights(root, siteKey, runId);
   if (!rights) throw new Error(`Run ${runId} has no asset evidence; measure it with --assets first`);
   jsonOutput({ runId, siteKey, ...rights });
@@ -890,6 +923,145 @@ async function commandIngest(options) {
     })),
     coverage: result.coverage,
   });
+}
+
+// The image source run and a reader for one page's native crop or 1x reference.
+function imageRun(options) {
+  const root = options.root ? String(options.root) : process.cwd();
+  const siteKey = String(required(options, 'site'));
+  const runId = resolveRunId(root, siteKey, String(options.run ?? 'current'), 'source');
+  const manifest = readManifest(root, siteKey, runId);
+  if (manifest.target?.evidence !== 'image') throw new Error(`Run ${runId} is not an image source run; create one with ingest`);
+  const screens = JSON.parse(readArtifact(root, siteKey, runId, 'measurements/frames.json').toString('utf8')).screens;
+  const screen = (page) => {
+    const found = screens.find((entry) => entry.page === page);
+    if (!found) throw new Error(`Page ${page} is not in run ${runId}; pages: ${screens.map((entry) => entry.page).join(', ')}`);
+    return found;
+  };
+  return {
+    root,
+    siteKey,
+    runId,
+    screens,
+    screen,
+    native: (page) => ({ raster: rasterFromPng(readArtifact(root, siteKey, runId, screen(page).references.native)), geometry: screen(page).cropGeometry }),
+    reference: (page) => rasterFromPng(readArtifact(root, siteKey, runId, screen(page).references.reference)),
+    researchDirectory: join(dirname(parityRoot(root, siteKey))),
+  };
+}
+
+function commandAnalyze(options) {
+  const kind = options._[0];
+  if (!['palette', 'layout'].includes(kind)) throw new Error('Use analyze palette or analyze layout');
+  const run = imageRun(options);
+  if (kind === 'palette') {
+    const tokens = analyzePalette(run.screens.map((screen) => ({ page: screen.page, ...run.native(screen.page) })), { runId: run.runId, siteKey: run.siteKey });
+    const directory = join(run.researchDirectory, 'design-tokens');
+    mkdirSync(directory, { recursive: true });
+    const outputs = { tokens: join(directory, 'tokens.json'), markdown: join(directory, 'DESIGN_TOKENS.md'), theme: join(directory, 'theme.css') };
+    writeFileSync(outputs.tokens, `${JSON.stringify(tokens, null, 2)}\n`);
+    writeFileSync(outputs.markdown, renderDesignTokensMarkdown(tokens));
+    writeFileSync(outputs.theme, renderThemeCss(tokens));
+    jsonOutput({ runId: run.runId, siteKey: run.siteKey, derived: true, surfaces: tokens.colors.surface.slice(0, 8), text: tokens.colors.text.slice(0, 8), outputs });
+    return;
+  }
+  const pages = run.screens.map((screen) => {
+    const { raster, geometry } = run.native(screen.page);
+    return { page: screen.page, route: screen.route, layout: analyzeLayout(raster, { geometry }) };
+  });
+  const directory = join(run.researchDirectory, 'layout');
+  mkdirSync(directory, { recursive: true });
+  for (const page of pages) writeFileSync(join(directory, `${page.page}.json`), `${JSON.stringify(page, null, 2)}\n`);
+  const markdown = join(run.researchDirectory, 'LAYOUT.md');
+  writeFileSync(markdown, renderLayoutMarkdown(pages, { runId: run.runId }));
+  jsonOutput({ runId: run.runId, siteKey: run.siteKey, derived: true, pages: pages.map(({ page, layout }) => ({ page, panels: layout.panels.length, gaps: layout.gaps.slice(0, 5), insets: layout.insets.slice(0, 5), radii: layout.radii.slice(0, 5) })), outputs: { directory, markdown } });
+}
+
+async function commandAssets(options) {
+  if (options._[0] !== 'extract') throw new Error('Use assets extract');
+  const kind = String(required(options, 'kind'));
+  assertExtractionAllowed(kind, Boolean(options.approved));
+  const run = imageRun(options);
+  const page = String(required(options, 'page'));
+  const name = String(required(options, 'name'));
+  if (!/^[a-z0-9][a-z0-9._-]*\.(?:png|jpe?g|webp)$/iu.test(name)) throw new Error('--name must be a simple file name ending in .png, .jpg, .jpeg, or .webp');
+  const box = listOption(options, 'box', 4);
+  const occlude = options.occlude ? String(options.occlude).split(';').filter(Boolean).map((entry) => {
+    const values = entry.split(',').map(Number);
+    if (values.length !== 4 || !values.every(Number.isFinite)) throw new Error('--occlude takes boxes as "x0,y0,x1,y1;x0,y0,x1,y1"');
+    return values;
+  }) : [];
+  const output = options.out ? resolve(run.root, String(options.out)) : resolve(run.root, 'public', 'sites', run.siteKey, page, name);
+  const { raster, geometry } = run.native(page);
+  const result = await extractAsset({ raster, geometry, box, occlude, output });
+  const screen = run.screen(page);
+  const recorded = recordExtractedAsset({
+    root: run.root,
+    siteKey: run.siteKey,
+    record: { name, kind, page, image: screen.image.name, box, occlude, output, width: result.width, height: result.height, approved: Boolean(options.approved), sourceRunId: run.runId, rights: 'unverified' },
+  });
+  jsonOutput({ ...result, kind, rights: 'unverified', manifest: recorded.manifestPath });
+}
+
+function jsonList(options, key, run) {
+  const value = JSON.parse(readFileSync(resolve(run.root, String(required(options, key))), 'utf8'));
+  if (!Array.isArray(value) || !value.length) throw new Error(`--${key} must be a non-empty JSON array`);
+  return value;
+}
+
+// One decoded native crop per page, shared by every sample or box on it.
+function nativePages(run) {
+  const pages = new Map();
+  return (page) => {
+    if (!pages.has(page)) pages.set(page, run.native(page));
+    return pages.get(page);
+  };
+}
+
+function familyCandidates(list) {
+  return list.split(',').map((name) => name.trim()).filter(Boolean).map((name) => {
+    if (name.startsWith('local:')) return { family: name.slice('local:'.length), weights: [300, 400, 500, 600, 700], source: 'local' };
+    return DEFAULT_FONT_CANDIDATES.find((candidate) => candidate.family.toLowerCase() === name.toLowerCase()) ?? { family: name, weights: [300, 400, 500, 600, 700] };
+  });
+}
+
+async function commandFonts(options) {
+  if (options._[0] !== 'fit') throw new Error('Use fonts fit');
+  const run = imageRun(options);
+  const native = nativePages(run);
+  const samples = jsonList(options, 'samples', run).map((entry, index) => {
+    if (!entry?.id || !entry.page || typeof entry.text !== 'string' || !entry.text) throw new Error(`Sample ${index + 1} needs id, page, text, and box`);
+    return { ...native(String(entry.page)), id: String(entry.id), text: entry.text, box: entry.box, mode: entry.mode ?? 'dark', tracking: entry.tracking ?? 0, weightHint: entry.weightHint ?? null };
+  });
+  const result = await fitFonts({
+    samples,
+    candidates: options.families ? familyCandidates(String(options.families)) : DEFAULT_FONT_CANDIDATES,
+    fontDir: options['font-dir'] ? resolve(run.root, String(options['font-dir'])) : null,
+  });
+  mkdirSync(run.researchDirectory, { recursive: true });
+  const outputs = { fonts: join(run.researchDirectory, 'fonts.json'), typeScale: join(run.researchDirectory, 'TYPE_SCALE.md') };
+  writeFileSync(outputs.fonts, `${JSON.stringify({ derived: true, sourceRunId: run.runId, ...result }, null, 2)}\n`);
+  writeFileSync(outputs.typeScale, renderTypeScaleMarkdown(result));
+  jsonOutput({ runId: run.runId, siteKey: run.siteKey, derived: true, families: result.families.slice(0, 5), typeScale: result.typeScale, unavailable: result.unavailable, warnings: result.warnings, outputs });
+}
+
+async function commandIcons(options) {
+  if (options._[0] !== 'match') throw new Error('Use icons match');
+  const run = imageRun(options);
+  const native = nativePages(run);
+  const boxes = jsonList(options, 'boxes', run).map((entry, index) => {
+    if (!entry?.id || !entry.page) throw new Error(`Icon box ${index + 1} needs id, page, and box`);
+    return { ...native(String(entry.page)), id: String(entry.id), box: entry.box, mode: entry.mode ?? 'dark' };
+  });
+  const result = await matchIcons({
+    boxes,
+    sets: options.sets ? String(options.sets).split(',').map((prefix) => prefix.trim()).filter(Boolean) : DEFAULT_ICON_SETS,
+    cacheDirectory: resolve(run.root, '.cloner-runtime', 'icon-cache'),
+  });
+  mkdirSync(run.researchDirectory, { recursive: true });
+  const output = join(run.researchDirectory, 'icons.json');
+  writeFileSync(output, `${JSON.stringify({ derived: true, sourceRunId: run.runId, ...result }, null, 2)}\n`);
+  jsonOutput({ runId: run.runId, siteKey: run.siteKey, derived: true, boxes: result.boxes.map((entry) => ({ id: entry.id, matches: entry.matches.slice(0, 3) })), sets: result.sets, warnings: result.warnings, output });
 }
 
 // A probe reads an image file in image pixels (to find anchors before ingest)
@@ -943,6 +1115,10 @@ async function main(argv = process.argv.slice(2)) {
   if (options.command === 'measure') return commandMeasure(options);
   if (options.command === 'ingest') return commandIngest(options);
   if (options.command === 'probe') return commandProbe(options);
+  if (options.command === 'analyze') return commandAnalyze(options);
+  if (options.command === 'assets') return commandAssets(options);
+  if (options.command === 'fonts') return commandFonts(options);
+  if (options.command === 'icons') return commandIcons(options);
   if (options.command === 'diff') return commandDiff(options);
   if (options.command === 'findings') return commandFindings(options);
   if (options.command === 'fixture' && options._[0] === 'freeze') return commandFixture(options);
