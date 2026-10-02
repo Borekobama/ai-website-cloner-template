@@ -287,11 +287,11 @@ export async function captureVisualRegions(page, { config, target, route, timeou
   };
 }
 
-function readPng(bytes, label) {
+export function readPng(bytes, label) {
   try {
     return PNG.sync.read(bytes);
   } catch (error) {
-    throw new Error(`Invalid visual region PNG ${label}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Invalid PNG ${label}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

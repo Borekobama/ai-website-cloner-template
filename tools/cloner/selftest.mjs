@@ -23,6 +23,8 @@ import { compareMotionObservations } from './motion.mjs';
 import { captureDomSnapshot, compareDomSnapshotStructure, domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareResponsiveEvidence, generateExactPixelProbes, generateMediaFeatureProbes, normalizeCssCondition, parseResponsiveCondition, responsiveThresholds } from './responsive.mjs';
 import { compareAssetEvidence } from './assets.mjs';
+import { createRaster } from './image.mjs';
+import { probeEdges } from './probes.mjs';
 import { PNG } from 'pngjs';
 import { canonicalJson, sha256 } from './run-store.mjs';
 
@@ -162,6 +164,13 @@ export async function runSelfTests() {
     assert.deepEqual(generateMediaFeatureProbes([{ kind: 'media', condition: '(hover:none)' }]).map((probe) => probe.features.touch), [false, true]);
     assert.equal(deadClassDetail('custom:opacity-50', new Set(['opacity-50'])).reason, 'undefined-variant');
     assert.deepEqual(classNamesFromCss('.\\32 xl\\:p-4:hover'), ['2xl:p-4']);
+    // Image probes: an edge at x = 10.3 (pixel 10 is 70 % covered).
+    const edgeRaster = createRaster(24, 3, [255, 255, 255, 255]);
+    for (let y = 0; y < 3; y += 1) {
+      for (let x = 10; x < 24; x += 1) edgeRaster.data.fill(x === 10 ? 77 : 0, (y * 24 + x) * 4, (y * 24 + x) * 4 + 3);
+    }
+    const [probedEdge] = probeEdges(edgeRaster, { origin: { x: 0, y: 0 }, scale: 1 }, { axis: 'x', at: 1, from: 0, to: 24 }).edges;
+    assert.ok(Math.abs(probedEdge.position - 10.3) < 0.02);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

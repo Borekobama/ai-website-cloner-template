@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Image core for screenshot cloning, with no new dependencies: `image.mjs` decodes PNG directly and WebP, JPEG, AVIF, GIF, and colour-profiled PNG through the bundled Chromium (converted to sRGB); `frames.mjs` finds the backdrop, one or more app frames at sub-pixel accuracy (drop shadows tolerated, cropped sides flagged), and the scale from a declared scale, anchors of known CSS length, a design width, or a common design size; `probes.mjs` measures edges, ink runs, ink boxes (with a clipped-box warning), flat and text colours, and corner radii in CSS pixels of the normalized frame
 - Typed control trials: the dead-controls audit fills text fields with a valid probe value, picks another option in a select, and listens for a file chooser around each click. New categories `input` (a value, selection, or checked state that sticks) and `file-chooser`
 - Category `inert-overlay` for controls inside a closed `<dialog>` or popover. It does not close an earlier dead-control finding
 - `--hydration-timeout <ms>` for `measure` and `audit dead-controls` (default 10000)
