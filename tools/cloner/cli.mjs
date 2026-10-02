@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from './args.mjs';
 import { classifyAssetRights } from './asset-rights.mjs';
@@ -9,6 +9,9 @@ import { launchBrowser, launchPersistentContext } from './browser.mjs';
 import { auditCloneCode } from './clone-code.mjs';
 import { deploymentFingerprint, driftStatus } from './fingerprint.mjs';
 import { routesFromSitemap } from './head.mjs';
+import { decodeImage, rasterFromPng } from './image.mjs';
+import { ingestScreens } from './ingest.mjs';
+import { probeColor, probeEdges, probeInkBox, probeInkRuns, probeRadius } from './probes.mjs';
 import { safeUrl } from './redact.mjs';
 import { renderReportHtml } from './report-html.mjs';
 import { extractDesignTokens, renderDesignTokensMarkdown, renderThemeCss } from './tokens.mjs';
@@ -59,6 +62,8 @@ Usage:
 
 Commands:
   measure                         Capture a source or clone into a new immutable run
+  ingest                          Measure screenshots into a new immutable image source run
+  probe edges|runs|box|color|radius  Measure a screenshot or an ingested screen
   diff                            Compare two immutable runs; also writes report.html
   audit dead-controls             Audit controls with Playwright actionability checks
   audit dead-classes              Audit route-scoped runtime classes against compiled CSS
@@ -103,6 +108,21 @@ Measure options:
   --aria                        Capture accessibility-tree landmarks, headings, and role counts
   --head                        Capture head metadata: title, description, canonical, robots, hreflang, JSON-LD, social, icons
   --performance                 Capture informational load metrics: LCP, CLS, and transfer bytes
+
+Ingest options:
+  --screens <path>               screens.json that lists the screenshots (required)
+  --site <site-key>              Site namespace (default: <site>-screens-<image hash>)
+  --inventory                    Declare the screens as the authoritative route inventory
+
+Probe options:
+  --image <path>                 Probe an image file in image pixels (before ingest, for anchors)
+  --site <site-key> --page <key> Probe an ingested screen in CSS pixels
+  --run <run-id|current>         Image source run for --page (default: current)
+  edges   --axis x|y --at <n> --from <n> --to <n> [--band <n>] [--min-contrast <n>]
+  runs    --axis x|y --band <a,b> --range <a,b> [--mode dark|light] [--threshold <n>] [--gap <n>]
+  box     --box <x0,y0,x1,y1> [--mode dark|light] [--threshold <n>]
+  color   --box <x0,y0,x1,y1> [--mode flat|dark|light] [--threshold <n>]
+  radius  --box <x0,y0,x1,y1> --corner tl|tr|bl|br [--max-radius <n>]
 
 Diff options:
   --source <run-id|current>      Concrete source run or source-current ref
@@ -167,6 +187,27 @@ function siteKeyFromUrl(url) {
 
 function jsonOutput(value) {
   console.log(JSON.stringify(value, null, 2));
+}
+
+function numberOption(options, key, fallback) {
+  if (options[key] === undefined || options[key] === true) {
+    if (fallback === undefined) throw new Error(`Missing required option --${key}`);
+    return fallback;
+  }
+  const value = Number(options[key]);
+  if (!Number.isFinite(value)) throw new Error(`--${key} must be a number`);
+  return value;
+}
+
+function listOption(options, key, length) {
+  const values = String(required(options, key)).split(',').map(Number);
+  if (values.length !== length || !values.every(Number.isFinite)) throw new Error(`--${key} must be ${length} comma-separated numbers`);
+  return values;
+}
+
+// Screenshot runs have no live page to act on.
+function assertLiveRun(manifest) {
+  if (manifest.target?.evidence === 'image') throw new Error(`Run ${manifest.runId} holds screenshot evidence; audits and drift need a measured live target`);
 }
 
 function pathForRunArtifact(root, siteKey, runId, artifactPath) {
@@ -389,6 +430,7 @@ async function commandAudit(options, auditName) {
   const concurrency = target === 'clone' ? trialConcurrencyOption(options) : 1;
   const runId = resolveMeasurementRun(options, root, siteKey);
   const sourceManifest = readManifest(root, siteKey, runId);
+  assertLiveRun(sourceManifest);
   const policy = loadPolicy(options.policy, root, siteKey);
   const sourceCoverage = JSON.parse(readArtifact(root, siteKey, runId, 'coverage.json').toString('utf8'));
   const parentRoutes = JSON.parse(readArtifact(root, siteKey, runId, 'measurements/routes.json').toString('utf8'));
@@ -692,6 +734,7 @@ async function commandDrift(options) {
   const baseRunId = resolveRunId(root, siteKey, required(options, 'run'), target);
   const baseManifest = readManifest(root, siteKey, baseRunId);
   if (baseManifest.status !== 'closed') throw new Error(`Drift checks require a closed measurement run: ${baseRunId}`);
+  assertLiveRun(baseManifest);
   if (target === 'source' && !options.profile) throw new Error('Source drift checks require --profile');
   const origin = new URL(baseManifest.target.origin).origin;
   const baseRoutes = JSON.parse(readArtifact(root, siteKey, baseRunId, 'measurements/routes.json').toString('utf8')).routes ?? [];
@@ -814,6 +857,66 @@ function commandRights(options) {
   jsonOutput({ runId, siteKey, ...rights });
 }
 
+async function commandIngest(options) {
+  const root = options.root ? String(options.root) : process.cwd();
+  const result = await ingestScreens({ root, screensPath: required(options, 'screens'), siteKey: options.site ? String(options.site) : null, inventory: Boolean(options.inventory) });
+  jsonOutput({
+    runId: result.manifest.runId,
+    status: result.manifest.status,
+    siteKey: result.siteKey,
+    references: result.referencesRoot,
+    screens: result.screens.map((screen) => ({
+      page: screen.page,
+      route: screen.route,
+      kind: screen.kind,
+      scale: Number(screen.scale.scale.toFixed(5)),
+      method: screen.scale.method,
+      confidence: screen.scale.confidence,
+      css: { width: Number(screen.geometry.css.width.toFixed(1)), height: Number(screen.geometry.css.height.toFixed(1)) },
+      cropped: screen.frame.cropped,
+      warnings: screen.warnings,
+    })),
+    coverage: result.coverage,
+  });
+}
+
+// A probe reads an image file in image pixels (to find anchors before ingest)
+// or the native crop of an ingested screen in CSS pixels.
+async function probeSource(options) {
+  if (options.image) {
+    const { raster } = await decodeImage(readFileSync(String(options.image)));
+    return { raster, geometry: { origin: { x: 0, y: 0 }, scale: 1 }, units: 'image-pixels' };
+  }
+  const root = options.root ? String(options.root) : process.cwd();
+  const siteKey = required(options, 'site');
+  const page = String(required(options, 'page'));
+  const runId = resolveRunId(root, siteKey, String(options.run ?? 'current'), 'source');
+  const manifest = readManifest(root, siteKey, runId);
+  if (manifest.target?.evidence !== 'image') throw new Error(`Run ${runId} is not an image source run; create one with ingest`);
+  const frames = JSON.parse(readArtifact(root, siteKey, runId, 'measurements/frames.json').toString('utf8'));
+  const screen = frames.screens.find((entry) => entry.page === page);
+  if (!screen) throw new Error(`Page ${page} is not in run ${runId}; pages: ${frames.screens.map((entry) => entry.page).join(', ')}`);
+  return { raster: rasterFromPng(readArtifact(root, siteKey, runId, screen.references.native)), geometry: screen.cropGeometry, units: 'css-pixels', runId, page };
+}
+
+async function commandProbe(options) {
+  const probe = options._[0];
+  if (!['edges', 'runs', 'box', 'color', 'radius'].includes(probe)) throw new Error('Use probe edges, runs, box, color, or radius');
+  const { raster, geometry, units, runId, page } = await probeSource(options);
+  const mode = options.mode === undefined ? undefined : String(options.mode);
+  const threshold = numberOption(options, 'threshold', 40);
+  const result = probe === 'edges'
+    ? probeEdges(raster, geometry, { axis: String(options.axis ?? 'x'), at: numberOption(options, 'at'), from: numberOption(options, 'from'), to: numberOption(options, 'to'), band: numberOption(options, 'band', 1), minContrast: numberOption(options, 'min-contrast', 12) })
+    : probe === 'runs'
+      ? probeInkRuns(raster, geometry, { axis: String(options.axis ?? 'x'), band: listOption(options, 'band', 2), range: listOption(options, 'range', 2), mode: mode ?? 'dark', threshold, gap: numberOption(options, 'gap', 2) })
+      : probe === 'box'
+        ? probeInkBox(raster, geometry, { box: listOption(options, 'box', 4), mode: mode ?? 'dark', threshold })
+        : probe === 'color'
+          ? probeColor(raster, geometry, { box: listOption(options, 'box', 4), mode: mode ?? 'flat', threshold })
+          : probeRadius(raster, geometry, { box: listOption(options, 'box', 4), corner: String(options.corner ?? 'tl'), maxRadius: numberOption(options, 'max-radius', null) });
+  jsonOutput({ probe, units, ...(runId ? { runId, page } : {}), ...result });
+}
+
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.command === 'help' || options.help) {
@@ -826,6 +929,8 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (options.command === 'measure') return commandMeasure(options);
+  if (options.command === 'ingest') return commandIngest(options);
+  if (options.command === 'probe') return commandProbe(options);
   if (options.command === 'diff') return commandDiff(options);
   if (options.command === 'findings') return commandFindings(options);
   if (options.command === 'fixture' && options._[0] === 'freeze') return commandFixture(options);
