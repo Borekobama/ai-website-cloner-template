@@ -181,7 +181,14 @@ function portableSkill(text, version) {
   ];
   let output = text;
   for (const [find, replacement] of rules) output = replaceOnce(output, find, replacement);
-  return output.replaceAll('npm run cloner -- ', 'node "$CLONER_LAUNCHER" ');
+  return portableReference(output)
+    .replaceAll('`docs/research/SCREENSHOT_MODE_REFERENCE.md`', "this skill's `references/SCREENSHOT_MODE_REFERENCE.md`")
+    .replaceAll('`docs/research/templates/`', "this skill's `references/templates/`");
+}
+
+// Commands in portable documents run through the bundled launcher.
+function portableReference(text) {
+  return text.replaceAll('npm run cloner -- ', 'node "$CLONER_LAUNCHER" ');
 }
 
 // Runtime modules only: tests, fixtures, the integration harness, and the
@@ -235,6 +242,10 @@ function runtimePackage() {
 rmSync(join(ROOT, PORTABLE_DIR), { recursive: true, force: true });
 write(`${PORTABLE_DIR}/SKILL.md`, portableSkill(raw, PACKAGE.version));
 write(`${PORTABLE_DIR}/references/CLONE_BOOTSTRAP_REFERENCE.md`, readFileSync(join(ROOT, 'docs', 'research', 'CLONE_BOOTSTRAP_REFERENCE.md'), 'utf8'));
+write(`${PORTABLE_DIR}/references/SCREENSHOT_MODE_REFERENCE.md`, portableReference(readFileSync(join(ROOT, 'docs', 'research', 'SCREENSHOT_MODE_REFERENCE.md'), 'utf8')));
+for (const template of readdirSync(join(ROOT, 'docs', 'research', 'templates')).sort()) {
+  write(`${PORTABLE_DIR}/references/templates/${template}`, portableReference(readFileSync(join(ROOT, 'docs', 'research', 'templates', template), 'utf8')));
+}
 write(`${PORTABLE_DIR}/scripts/cloner.mjs`, readFileSync(join(ROOT, 'tools', 'cloner', 'portable', 'launcher.mjs'), 'utf8'));
 const runtime = runtimePackage();
 const modules = runtimeFiles();

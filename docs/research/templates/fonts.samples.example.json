@@ -1,0 +1,8 @@
+[
+  { "id": "page-title", "page": "overview", "text": "Good morning, Nizam", "box": [284, 24, 560, 60], "mode": "dark" },
+  { "id": "card-title", "page": "overview", "text": "1254 Oak Street", "box": [300, 210, 480, 236], "mode": "dark", "weightHint": 500 },
+  { "id": "body", "page": "overview", "text": "Austin, TX 78704 · City of Austin", "box": [300, 236, 520, 254], "mode": "dark" },
+  { "id": "overline", "page": "overview", "text": "PERMIT PIPELINE", "box": [730, 96, 880, 112], "mode": "dark", "tracking": 0.07 },
+  { "id": "mono-id", "page": "project-documents", "text": "PL-2841", "box": [300, 140, 380, 160], "mode": "dark" },
+  { "id": "button-label", "page": "overview", "text": "New project", "box": [1310, 28, 1410, 52], "mode": "light" }
+]

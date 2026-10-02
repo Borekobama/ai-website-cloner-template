@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "site": "permitly",
+  "designWidth": 1440,
+  "screens": [
+    { "image": "overview.webp", "page": "overview", "route": "/", "kind": "presentation" },
+    { "image": "project.webp", "page": "project-actions-open", "route": "/projects/PL-2841", "kind": "presentation", "state": "actions menu open" },
+    {
+      "image": "requirements-zoom.webp",
+      "page": "requirements",
+      "route": "/requirements",
+      "kind": "presentation",
+      "anchors": [{ "axis": "x", "native": [132.28, 540.96], "css": 240 }]
+    },
+    { "image": "pricing@2x.png", "page": "pricing", "route": "/pricing", "kind": "raw", "dpr": 2 },
+    { "image": "Frame 12.png", "page": "mobile-home", "route": "/", "kind": "design-export", "scale": 1, "designWidth": 390, "state": "mobile" },
+    { "image": "settings.png", "page": "settings", "route": "/settings", "kind": "raw", "dpr": 2, "liveSource": "https://app.example.com" }
+  ]
+}

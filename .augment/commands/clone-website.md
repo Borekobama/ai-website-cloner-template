@@ -29,6 +29,23 @@ For **Bootstrap**, also read `docs/research/CLONE_BOOTSTRAP_REFERENCE.md` before
 extraction. It preserves detailed route, asset-discovery, scope-default, and
 Atlas fallback contracts that are intentionally kept out of this shorter skill.
 
+## Evidence modes
+
+Choose the evidence before you start:
+
+- **Live**: a reachable source URL. Follow the workflow below.
+- **Screenshots**: no live source, only images (presentation shots, raw
+  screenshots, design exports, cropped zooms). Read
+  `docs/research/SCREENSHOT_MODE_REFERENCE.md` first. In short: list the
+  screens in `screens.json`, run `ingest --inventory` to create the image source
+  run, draft the system with `analyze palette`, `analyze layout`, `fonts fit`,
+  `icons match`, and `probe`, write `DESIGN.md` and specs from those
+  measurements, build, then run `measure --anchors` and `diff` against the image
+  run. Templates are in `docs/research/templates/`.
+- **Mixed**: a live site plus screenshots of states it cannot show. Measure the
+  live source, ingest the screenshots into their own image run under the same
+  site key, and diff the clone run against each source run.
+
 Unless the user says otherwise, bootstrap fidelity is pixel-perfect visual and
 behavioral emulation: exact colors, spacing, typography, responsive behavior,
 and observed animations. Visual layout/styling, component interactions,
@@ -55,7 +72,9 @@ Explicit user instructions override these defaults.
 - Preserve existing routes, research, screenshots, components, and asset
   namespaces. A target URL is not permission to replace an existing route.
 - Use real target text and assets. Do not invent content, logos, or brand
-  artwork when an original can be inspected or downloaded.
+  artwork when an original can be inspected or downloaded. In screenshot mode
+  the screenshots are the original: transcribe their text exactly, and use
+  crops only as rights-unverified placeholders recorded by `assets extract`.
 - Keep authenticated browser profiles outside commits, normally in
   `.cloner-profiles/`. Never persist cookies, authorization headers, tokens,
   payment-session URLs, or profile filesystem paths.
@@ -249,7 +268,10 @@ does not automatically invalidate the whole authenticated session. Clone
 measurement must fail closed on server errors, missing client chunks, or absent
 explicit/React+Next hydration evidence. A failed precondition keeps evidence
 from routes already completed, records the failed route, and must not create
-confident parity findings.
+confident parity findings. Clone pages get a bounded wait for hydration
+evidence (`--hydration-timeout`); measure and audit a production build with
+`--server managed --server-command start`, because development servers hydrate
+late.
 
 The common measurement envelope is small and kind-specific. Initial supported
 kinds are route inventory, control observations, route-scoped runtime classes,
@@ -261,9 +283,12 @@ provenance before aggregating class observations; one route's development CSS
 cannot represent another route.
 
 The dead-controls audit uses user-like Playwright actionability/trial checks
-and hit testing. Classify disabled, unreachable, blocked-by-policy,
-already-active, navigation, state change, overlay, DOM/style change, network-only effect, and dead
-separately. `DEAD` means an allowed, reachable control was actually exercised
+and hit testing. Classify disabled, unreachable, inert-overlay (inside a closed
+dialog or popover), blocked-by-policy, already-active, navigation, state change,
+overlay, DOM/style change, network-only effect, input (a typed value, selection,
+or checked state that sticks), file-chooser, and dead separately. Text fields
+are filled with a valid probe value, selects get another option, and every
+click listens for a file chooser. `DEAD` means an allowed, reachable control was actually exercised
 and produced no expected observable product effect; it does not mean a script
 failed to click. Safe-action policy is decided first: a blocked occurrence is
 recorded from the baseline page and is never opened in a trial. Every allowed
@@ -329,6 +354,21 @@ as clocks or avatars. Add a `state` (`hover`, `focus`, or `click` plus a trigger
 selector) to capture a region after an interaction; it runs on a fresh page and
 only after safe-action policy allows the action.
 
+For screenshot evidence, measure the clone against the image run with
+anchors, then diff:
+
+```bash
+npm run cloner -- measure --target clone --url <clone-origin> --site <site-key> --anchors anchors.json --reference-run <image-run>
+npm run cloner -- diff --site <site-key> --source <image-run> --clone <clone-run>
+```
+
+Anchors are named probes with tolerances. They run identically on the
+reference and on the clone, which is captured at the reference's own scale.
+Gate anchors decide parity. Regions compare configured CSS boxes; a region that
+covers most of the page cannot gate, and the page images in `report.html` are a
+visual aid, not a score. Live-only modules are reported as not applicable, and
+clone runtime errors still gate.
+
 Pass `--aria` to compare landmark and heading outlines (gate) plus accessible
 names and role counts (informational). Pass `--head` to compare title,
 description, robots, canonical path, language, hreflang, and JSON-LD types
@@ -387,6 +427,10 @@ handoff includes:
 - the final diff's `report.html` path and the coverage of each optional module;
 - asset rights review status when the user does not own the source site;
 - visual QA results at desktop and mobile;
+- for screenshot evidence: the image run, each screen's kind, scale, method,
+  and confidence, anchor coverage and the largest residual, extrapolated
+  regions, known deviations from the screenshots, extracted assets with their
+  rights status, and the `DESIGN.md` path;
 - sections/components/specs/assets built and build/typecheck status.
 
 The clone remains revisit-able. After every repair, create a new clone run and

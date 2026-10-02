@@ -1,0 +1,6 @@
+[
+  { "id": "nav-overview", "page": "overview", "box": [30, 108, 54, 132], "mode": "light" },
+  { "id": "nav-projects", "page": "overview", "box": [30, 148, 54, 172], "mode": "dark" },
+  { "id": "header-bell", "page": "overview", "box": [1262, 28, 1286, 52], "mode": "dark" },
+  { "id": "card-arrow", "page": "overview", "box": [640, 216, 664, 240], "mode": "dark" }
+]
