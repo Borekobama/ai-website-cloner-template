@@ -87,12 +87,18 @@ export function probeEdges(raster, geometry, { axis = 'x', at, from, to, band = 
   return { axis, at, from, to, edges };
 }
 
-function backgroundLuminance(raster, box) {
-  // The outer ring of the box: robust while ink covers less than half of it.
+// The outer ring of the box: its median is the background while ink covers
+// less than half of it. A wide spread means the ring crosses other content.
+function backgroundRing(raster, box) {
   const values = [];
   for (let x = box.left; x < box.right; x += 1) values.push(luminance(colorAt(raster, x, box.top)), luminance(colorAt(raster, x, box.bottom - 1)));
   for (let y = box.top + 1; y < box.bottom - 1; y += 1) values.push(luminance(colorAt(raster, box.left, y)), luminance(colorAt(raster, box.right - 1, y)));
-  return median(values);
+  const sorted = Float64Array.from(values).sort();
+  return { median: median(values), spread: sorted[Math.floor(sorted.length * 0.9)] - sorted[Math.floor(sorted.length * 0.1)] };
+}
+
+function backgroundLuminance(raster, box) {
+  return backgroundRing(raster, box).median;
 }
 
 function inkStrength(color, background, mode) {
@@ -155,7 +161,8 @@ export function probeInkRuns(raster, geometry, { axis = 'x', band, range, mode =
 export function probeInkBox(raster, geometry, { box, mode = 'dark', threshold = 40 } = {}) {
   if (!['dark', 'light'].includes(mode)) throw new Error('Ink box mode must be dark or light');
   const area = nativeBox(raster, geometry, box);
-  const background = backgroundLuminance(raster, area);
+  const ring = backgroundRing(raster, area);
+  const background = ring.median;
   let left = Infinity;
   let top = Infinity;
   let right = -1;
@@ -172,7 +179,10 @@ export function probeInkBox(raster, geometry, { box, mode = 'dark', threshold = 
       bottom = Math.max(bottom, y);
     }
   }
-  if (right < 0) return { box, ink: null, warnings: ['No ink above the threshold in this box'] };
+  const ringWarnings = ring.spread > 40
+    ? [`The box border is not plain background (luminance spread ${Math.round(ring.spread)}); move or tighten the box so that only background surrounds the ink`]
+    : [];
+  if (right < 0) return { box, ink: null, warnings: ['No ink above the threshold in this box', ...ringWarnings] };
   const columnCoverage = (x) => (x < area.left || x >= area.right ? 0
     : coverage(Array.from({ length: bottom - top + 1 }, (_, index) => inkStrength(colorAt(raster, x, top + index), background, mode)), core));
   const rowCoverage = (y) => (y < area.top || y >= area.bottom ? 0
@@ -192,9 +202,12 @@ export function probeInkBox(raster, geometry, { box, mode = 'dark', threshold = 
     height: round(ink[3] - ink[1]),
     background: round(background, 1),
     clipped,
-    warnings: Object.values(clipped).some(Boolean)
-      ? [`Ink touches the box edge (${Object.entries(clipped).filter(([, value]) => value).map(([side]) => side).join(', ')}); widen the box, this size is a lower bound`]
-      : [],
+    warnings: [
+      ...(Object.values(clipped).some(Boolean)
+        ? [`Ink touches the box edge (${Object.entries(clipped).filter(([, value]) => value).map(([side]) => side).join(', ')}); widen the box, this size is a lower bound`]
+        : []),
+      ...ringWarnings,
+    ],
   };
 }
 

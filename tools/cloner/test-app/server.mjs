@@ -41,6 +41,7 @@ const FORMS_BODY = `
       <dialog id="fixture-dialog"><p>Dialog body</p><button class="fixture-control" aria-label="Dialog action">Dialog action</button></dialog>
       <svg class="fixture-icon" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16"></rect></svg>
       <p class="2xl:fixture-wide">Escaped leading-digit class.</p>
+      <p><code>ID 2048-77</code></p>
     </main>
 `;
 const FORMS_CSS = '<style>.fixture-icon { width: 16px; height: 16px; } .\\32 xl\\:fixture-wide { color: teal; }</style>';

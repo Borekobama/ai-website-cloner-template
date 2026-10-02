@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,7 +7,7 @@ import { PNG } from 'pngjs';
 import { classNamesFromCss, auditDeadRuntimeClasses, deadClassDetail } from './audits/dead-classes.mjs';
 import { classifyControl, compareEffectSignatures } from './audits/dead-controls.mjs';
 import { compareMeasurementData, findingCanClose, selectControlAudit } from './diff.mjs';
-import { assertResumeCompatibility, waitForHydration } from './measure.mjs';
+import { assertResumeCompatibility, startManagedCloneServer, waitForHydration } from './measure.mjs';
 import { compareMotionObservations } from './motion.mjs';
 import { appendLedgerEvent, auditFindingCanClose, readLedger, recordFindingStatus, stableFindingId, summarizeFindings } from './ledger.mjs';
 import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
@@ -429,6 +429,31 @@ test('clone hydration waits for late evidence and stops at an error marker', asy
   assert.equal((await waitForHydration(never, { timeoutMs: 20, pollMs: 5 })).hydrated, false);
   assert.ok(never.calls() > 1);
   await assert.rejects(() => waitForHydration(fakePage([new Error('gone')]), { timeoutMs: 0 }), /gone/u);
+});
+
+test('a managed production server is built before it starts, and a failed build stops it', { timeout: 60000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cloner-managed-'));
+  try {
+    // The server answers only after the build step wrote its output.
+    writeFileSync(join(root, 'server.mjs'), `import { createServer } from 'node:http';
+import { existsSync } from 'node:fs';
+const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+createServer((request, response) => response.end(existsSync('built') ? 'built' : 'not built')).listen(port, '127.0.0.1');
+`);
+    const scripts = (build) => JSON.stringify({ name: 'managed-fixture', private: true, scripts: { build, start: 'node server.mjs', dev: 'node server.mjs' } });
+    writeFileSync(join(root, 'package.json'), scripts("node -e \"require('fs').writeFileSync('built', '1')\""));
+    const server = await startManagedCloneServer({ root, command: 'start', timeoutMs: 20000 });
+    try {
+      assert.equal(await (await fetch(server.url)).text(), 'built');
+    } finally {
+      await server.stop();
+    }
+    writeFileSync(join(root, 'package.json'), scripts('node -e "process.exit(3)"'));
+    await assert.rejects(() => startManagedCloneServer({ root, command: 'start', timeoutMs: 20000 }), /npm run build failed \(exit 3\)/u);
+    await assert.rejects(() => startManagedCloneServer({ root, command: 'serve' }), /dev or start/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('run store is immutable after close or failure and refs resolve to concrete IDs', () => {

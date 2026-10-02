@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { test } from 'node:test';
+import { chromium } from 'playwright';
 import { launchBrowser } from './browser.mjs';
 import { colorAt, createRaster, cropRaster, decodeImage, imageFormat, rasterFromPng, resampleRegion, stepEdgePosition, toPng } from './image.mjs';
 import { paintRect } from './test-app/rasters.mjs';
@@ -43,7 +45,10 @@ test('PNG without a colour profile is read directly', async () => {
   assert.deepEqual(colorAt(decoded.raster, 1, 1), [1, 2, 3]);
 });
 
-test('Chromium decodes WebP and JPEG screenshots to sRGB pixels', async () => {
+// The unit-test job in CI has no browser; the integration job covers this path.
+const chromiumAvailable = existsSync(chromium.executablePath());
+
+test('Chromium decodes WebP and JPEG screenshots to sRGB pixels', { skip: !chromiumAvailable && 'Chromium is not installed' }, async () => {
   const browser = await launchBrowser({ headless: true });
   try {
     const raster = createRaster(64, 48, [239, 238, 243, 255]);

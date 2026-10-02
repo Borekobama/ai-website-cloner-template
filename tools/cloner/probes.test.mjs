@@ -66,6 +66,11 @@ test('ink box is exact inside a wide box and warns when the box clips it', () =>
   assert.equal(clipped.clipped.right, true);
   assert.match(clipped.warnings[0], /lower bound/u);
   assert.match(probeInkBox(white(), geometry, { box: [10, 10, 40, 40] }).warnings[0], /No ink/u);
+  // A box whose border runs over a dark panel cannot tell ink from background.
+  const mixed = white();
+  paintRect(mixed, nativeBox([0, 60, 100, 120]), [30, 30, 40]);
+  paintRect(mixed, nativeBox([120, 80, 160, 90]), [20, 20, 30]);
+  assert.match(probeInkBox(mixed, geometry, { box: [80, 70, 170, 100] }).warnings.join(' '), /not plain background/u);
 });
 
 test('flat colours are medians and text colour comes from stroke cores', () => {

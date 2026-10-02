@@ -69,7 +69,7 @@ async function presentationShot(url, { scale, viewport, offset }) {
     const page = await context.newPage();
     await page.goto(url, { waitUntil: 'networkidle' });
     const shot = rasterFromPng(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
-    const truth = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[aria-label], h1')]
+    const truth = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[aria-label], h1, code')]
       .map((element) => [element.getAttribute('aria-label') ?? element.tagName.toLowerCase(), element.getBoundingClientRect().toJSON()])));
     const canvas = createRaster(shot.width + 2 * offset[0], shot.height + 2 * offset[1], [194, 194, 194, 255]);
     for (let y = 0; y < shot.height; y += 1) shot.data.copy(canvas.data, ((y + offset[1]) * canvas.width + offset[0]) * 4, y * shot.width * 4, (y + 1) * shot.width * 4);
@@ -249,6 +249,22 @@ async function main() {
     } finally {
       await shifted.close();
     }
+    // Font fitting through the CLI with installed generic families, so the
+    // check needs no network: the heading is sans-serif and the code sample
+    // is monospace, at the browser's default sizes.
+    const samplesPath = join(screensDirectory, 'fonts.samples.json');
+    writeFileSync(samplesPath, JSON.stringify([
+      { id: 'heading', page: 'forms', text: 'Form fixture', box: [heading.x - 6, heading.y - 2, heading.right + 6, heading.bottom + 2] },
+      { id: 'code', page: 'forms', text: 'ID 2048-77', box: [truth.code.x - 6, truth.code.y - 4, truth.code.right + 6, truth.code.bottom + 4] },
+    ]));
+    const fonts = await runCli(parityRoot, ['fonts', 'fit', '--root', parityRoot, '--site', SCREEN_SITE, '--samples', samplesPath, '--families', 'local:sans-serif,local:serif,local:monospace']);
+    assert.equal(fonts.code, 0, fonts.stderr);
+    const fitted = Object.fromEntries(fonts.json.typeScale.map((entry) => [entry.id, entry]));
+    assert.equal(fitted.heading.family, 'sans-serif');
+    assert.ok(Math.abs(fitted.heading.size - 32) <= 1, `heading size ${fitted.heading.size}`);
+    assert.equal(fitted.code.family, 'monospace');
+    assert.ok(Math.abs(fitted.code.size - 13) <= 1, `code size ${fitted.code.size}`);
+    assert.ok(existsSync(fonts.json.outputs.typeScale));
     const imageAudit = await runCli(parityRoot, ['audit', 'dead-controls', '--root', parityRoot, '--site', SCREEN_SITE, '--target', 'source', '--run', imageRun, '--profile', profile]);
     assert.notEqual(imageAudit.code, 0);
     assert.match(imageAudit.stderr, /holds screenshot evidence/u);
