@@ -293,19 +293,73 @@ async function waitForServer(url, timeoutMs = 30000) {
   throw new Error(`Managed clone server did not become healthy: ${lastError?.message ?? 'timeout'}`);
 }
 
+// npm runs a script through a shell, so a server is a grandchild of the npm
+// process. On Linux, where /bin/sh is dash, killing npm alone leaves that
+// server running and holding this process's pipes. So npm leads its own
+// process group, and signals go to the whole group, also when this process
+// exits or is interrupted.
+function spawnNpm(root, args) {
+  const posix = process.platform !== 'win32';
+  const child = spawn('npm', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, BROWSER: 'none' }, detached: posix });
+  const signal = (name) => {
+    try {
+      if (posix) process.kill(-child.pid, name);
+      else child.kill(name);
+    } catch {
+      // The group has already exited.
+    }
+  };
+  const alive = () => {
+    if (!posix) return child.exitCode === null && child.signalCode === null;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const onExit = () => signal('SIGTERM');
+  const release = () => {
+    process.off('exit', onExit);
+    process.off('SIGINT', onInterrupt);
+    process.off('SIGTERM', onInterrupt);
+  };
+  function onInterrupt(name) {
+    release();
+    signal('SIGTERM');
+    process.kill(process.pid, name);
+  }
+  process.once('exit', onExit);
+  process.once('SIGINT', onInterrupt);
+  process.once('SIGTERM', onInterrupt);
+  // SIGTERM to the group, then SIGKILL for anything still alive after 5 s.
+  const stop = async () => {
+    release();
+    signal('SIGTERM');
+    const deadline = Date.now() + 5000;
+    while (alive() && Date.now() < deadline) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    if (alive()) signal('SIGKILL');
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  };
+  return { child, stop, release };
+}
+
 function runNpmScript(root, script, timeoutMs) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn('npm', ['run', script], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, BROWSER: 'none' } });
+    const { child, stop, release } = spawnNpm(root, ['run', script]);
     let output = '';
     child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
     child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
-    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+    const timer = setTimeout(() => { stop(); }, timeoutMs);
     child.once('error', (error) => {
       clearTimeout(timer);
+      release();
       reject(error);
     });
     child.once('exit', (code, signal) => {
       clearTimeout(timer);
+      release();
       if (code === 0) resolveRun();
       else reject(new Error(`npm run ${script} failed (${signal ?? `exit ${code}`})${output ? `\n${output.slice(-2000)}` : ''}`));
     });
@@ -320,11 +374,7 @@ export async function startManagedCloneServer({ root = process.cwd(), port, comm
   if (cleanNext) rmSync(resolve(root, '.next'), { recursive: true, force: true });
   // A production server needs a fresh build of the current tree.
   if (command === 'start') await runNpmScript(root, 'build', buildTimeoutMs);
-  const child = spawn('npm', ['run', command, '--', '--hostname', '127.0.0.1', '--port', String(actualPort)], {
-    cwd: root,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, BROWSER: 'none' },
-  });
+  const { child, stop } = spawnNpm(root, ['run', command, '--', '--hostname', '127.0.0.1', '--port', String(actualPort)]);
   let output = '';
   child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
   child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
@@ -332,21 +382,10 @@ export async function startManagedCloneServer({ root = process.cwd(), port, comm
   try {
     await waitForServer(url, timeoutMs);
   } catch (error) {
-    child.kill('SIGTERM');
+    await stop();
     throw new Error(`${error.message}${output ? `\n${output.slice(-1000)}` : ''}`);
   }
-  return {
-    url,
-    process: child,
-    async stop() {
-      if (child.exitCode !== null) return;
-      child.kill('SIGTERM');
-      await new Promise((resolveStop) => {
-        const timer = setTimeout(() => { child.kill('SIGKILL'); resolveStop(); }, 5000);
-        child.once('exit', () => { clearTimeout(timer); resolveStop(); });
-      });
-    },
-  };
+  return { url, process: child, stop };
 }
 
 function routeUrl(baseUrl, route) {

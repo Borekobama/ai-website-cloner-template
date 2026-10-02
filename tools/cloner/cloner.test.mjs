@@ -448,6 +448,8 @@ createServer((request, response) => response.end(existsSync('built') ? 'built' :
     } finally {
       await server.stop();
     }
+    // npm starts the server through a shell; stopping must end the server too.
+    await assert.rejects(() => fetch(server.url), /fetch failed/u);
     writeFileSync(join(root, 'package.json'), scripts('node -e "process.exit(3)"'));
     await assert.rejects(() => startManagedCloneServer({ root, command: 'start', timeoutMs: 20000 }), /npm run build failed \(exit 3\)/u);
     await assert.rejects(() => startManagedCloneServer({ root, command: 'serve' }), /dev or start/u);

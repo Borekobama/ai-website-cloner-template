@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-02
+
+### Fixed
+- Managed clone servers (`--server managed`, and the build before `--server-command start`) run in their own process group, and stopping one signals the whole group. On Linux, where `/bin/sh` is dash, the server that `npm run` started through a shell outlived `npm`, kept running after the measurement, and held the parent's pipes open, which hung the unit tests in CI. Exiting or interrupting the cloner also stops the group
+
 ## [0.14.0] - 2026-10-02
 
 Screenshot mode: a clone can now be built and measured from screenshots alone,

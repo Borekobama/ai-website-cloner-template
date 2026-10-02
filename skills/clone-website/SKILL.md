@@ -86,8 +86,8 @@ Explicit user instructions override these defaults.
 ## CLI command authority
 
 Resolve `<skill-root>` from this loaded `SKILL.md`, then use the shared launcher.
-The launcher installs runtime v0.14.0 once under
-`~/.skills-manager/runtime-cache/clone-website/0.14.0/`. The installed CLI help
+The launcher installs runtime v0.14.1 once under
+`~/.skills-manager/runtime-cache/clone-website/0.14.1/`. The installed CLI help
 is the version-matched command contract:
 
 ```bash
