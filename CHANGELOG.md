@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Typed control trials: the dead-controls audit fills text fields with a valid probe value, picks another option in a select, and listens for a file chooser around each click. New categories `input` (a value, selection, or checked state that sticks) and `file-chooser`
+- Category `inert-overlay` for controls inside a closed `<dialog>` or popover. It does not close an earlier dead-control finding
+- `--hydration-timeout <ms>` for `measure` and `audit dead-controls` (default 10000)
+- `--server-command dev|start` for managed clone servers; `start` runs `npm run build` first. `audit dead-controls` accepts `--server managed` and records the origin it actually used
+- Dead runtime-class reason `split-arbitrary-value`, with a fix hint, for classes that a space inside an arbitrary value split apart
+
+### Fixed
+- The clone hydration gate waits for `networkidle` and polls for hydration evidence, in measurement, in the audit baseline, and in every clone trial. Development servers that hydrate late no longer fail the audit or produce dead controls
+- A hydration marker or selector is enough evidence for a clone that does not use Next.js
+- SVG elements report their class attribute instead of `[object SVGAnimatedString]`
+- Compiled classes with CSS escapes, such as `.\32 xl\:p-4` (`2xl:p-4`), and non-ASCII class names are parsed in full. One escape-aware tokenizer now serves the measurement and the audit
+- The overlay count includes only open dialogs, open popovers, and visible dialog or menu roles, so opening a mounted `<dialog>` is detected as an overlay
+- Current-page links (`aria-current`), checked radios (`aria-checked` on radio roles, native checked radios), and Radix radio items (`data-state="checked"` or `"on"`) are classified as `already-active`. Control evidence records `aria-current`
+
 ## [0.13.1] - 2026-09-30
 
 ### Changed

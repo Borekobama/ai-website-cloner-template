@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { auditDeadControls, mapWithConcurrency } from './audits/dead-controls.mjs';
+import { auditDeadControls, classifyControl, mapWithConcurrency } from './audits/dead-controls.mjs';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -12,8 +12,9 @@ function description(control) {
     selector: null,
     controlClass: control.controlClass ?? 'default',
     href: control.href ?? null,
-    alreadyActive: false,
-    structure: { tag: control.role === 'link' ? 'a' : 'button', type: null, parentTag: 'div', parentRole: null, childElementCount: 0 },
+    alreadyActive: control.alreadyActive ?? false,
+    insideClosedOverlay: control.inert ?? false,
+    structure: { tag: control.tag ?? (control.role === 'link' ? 'a' : 'button'), type: control.type ?? null, parentTag: 'div', parentRole: null, childElementCount: 0 },
   };
 }
 
@@ -22,7 +23,7 @@ function description(control) {
 function fakeBrowser(controls, { gotoDelayMs = 0 } = {}) {
   const stats = { contexts: 0, open: 0, maxOpen: 0, lookupsWithoutTimeout: 0 };
   const makePage = () => {
-    const state = { url: 'http://fixture.test/home', gone: false, clicks: 0 };
+    const state = { url: 'http://fixture.test/home', gone: false, clicks: 0, values: [], listeners: new Map() };
     const element = (index) => ({
       evaluate: (fn, _arg, options) => {
         if (state.gone) {
@@ -43,13 +44,19 @@ function fakeBrowser(controls, { gotoDelayMs = 0 } = {}) {
             region: { dom: `region-${state.clicks}`, aria: '', style: '', structure: '' },
           });
         }
+        if (source.includes('selectedIndex')) return Promise.resolve({ value: state.values[index] ?? '', checked: null, selectedIndex: null });
         return Promise.reject(new Error('Unexpected in-page function'));
       },
       isVisible: async () => !state.gone,
       getAttribute: async () => null,
       isEnabled: async () => true,
+      fill: async (value) => {
+        // A controlled field that ignores input keeps its old value.
+        if (!controls[index].rejectsInput) state.values[index] = value;
+      },
       click: async (options = {}) => {
         if (options.trial) return;
+        if (controls[index].opensChooser) state.listeners.get('filechooser')?.({});
         state.clicks += 1;
         if (controls[index].navigates) {
           state.url = 'http://fixture.test/elsewhere';
@@ -64,8 +71,8 @@ function fakeBrowser(controls, { gotoDelayMs = 0 } = {}) {
         ? {}
         : { url: state.url, dom: `page-${state.clicks}`, aria: '', style: '', structure: '', overlayCount: 0, overlays: [] }),
       locator: () => ({ count: async () => (state.gone ? 0 : controls.length), nth: (index) => element(index) }),
-      on: () => {},
-      off: () => {},
+      on: (event, handler) => { state.listeners.set(event, handler); },
+      off: (event) => { state.listeners.delete(event); },
       waitForTimeout: wait,
       goto: async () => {
         await wait(gotoDelayMs);
@@ -129,6 +136,35 @@ test('clone trials overlap up to the limit while source trials stay sequential',
   const sourceAudit = await auditDeadControls(source.page, { target: 'source', route: '/home', policy: allowSource, concurrency: 4, effectWaitMs: 1 });
   assert.equal(source.stats.maxOpen, 1);
   assert.equal(sourceAudit.trialConcurrency, 1);
+});
+
+test('text fields are filled and a value that sticks is classified as input', async () => {
+  const { page } = fakeBrowser([
+    { role: 'input', name: 'Plain field', tag: 'input', type: 'text' },
+    { role: 'input', name: 'Controlled field', tag: 'input', type: 'search', rejectsInput: true },
+  ]);
+  const audit = await auditDeadControls(page, { target: 'clone', route: '/home', effectWaitMs: 1 });
+  assert.deepEqual(audit.observations.map((observation) => [observation.interaction, observation.category]), [['fill', 'input'], ['fill', 'dead']]);
+  assert.equal(audit.observations[0].effect.valueChanged, true);
+});
+
+test('file pickers, closed-dialog controls, and current-page links get their own categories', async () => {
+  const { page } = fakeBrowser([
+    { role: 'button', name: 'Upload', opensChooser: true },
+    { role: 'button', name: 'Dialog action', inert: true },
+    { role: 'link', name: 'Current page', href: '/home', alreadyActive: true },
+  ]);
+  const audit = await auditDeadControls(page, { target: 'clone', route: '/home', effectWaitMs: 1 });
+  assert.deepEqual(audit.observations.map((observation) => observation.category), ['file-chooser', 'inert-overlay', 'already-active']);
+  assert.equal(audit.observations[1].actionExecuted, false);
+  assert.equal(audit.classifiedCount, 3);
+});
+
+test('a chooser outranks other effects and a kept value is the last resort before dead', () => {
+  assert.equal(classifyControl({ after: { fileChooserOpened: true, domChanged: true } }), 'file-chooser');
+  assert.equal(classifyControl({ after: { valueChanged: true } }), 'input');
+  assert.equal(classifyControl({ after: { valueChanged: true, domChanged: true } }), 'DOM change');
+  assert.equal(classifyControl({ after: {} }), 'dead');
 });
 
 test('a control that navigates away does not stall the audit', { timeout: 5000 }, async () => {

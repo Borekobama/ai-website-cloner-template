@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { PNG } from 'pngjs';
-import { classNamesFromCss, auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
+import { classNamesFromCss, auditDeadRuntimeClasses, deadClassDetail } from './audits/dead-classes.mjs';
 import { classifyControl, compareEffectSignatures } from './audits/dead-controls.mjs';
 import { compareMeasurementData, findingCanClose, selectControlAudit } from './diff.mjs';
-import { assertResumeCompatibility } from './measure.mjs';
+import { assertResumeCompatibility, waitForHydration } from './measure.mjs';
 import { compareMotionObservations } from './motion.mjs';
 import { appendLedgerEvent, auditFindingCanClose, readLedger, recordFindingStatus, stableFindingId, summarizeFindings } from './ledger.mjs';
 import { evaluateAction, normalizePolicy, policySha256 } from './policy.mjs';
@@ -387,6 +387,48 @@ test('dead class audit preserves route provenance and does not borrow CSS betwee
   assert.equal(incomplete.stylesheetsUnreadable, 1);
   assert.deepEqual(incomplete.routes[0].deadClasses, ['possibly-missing']);
   assert.deepEqual(incomplete.findings, []);
+});
+
+test('class tokenizer handles escapes, leading digits, and non-ASCII names', () => {
+  assert.deepEqual(classNamesFromCss('.\\32 xl\\:p-4, .\\31 0, .größe, .--token, .w-1\\/2:hover'), ['--token', '10', '2xl:p-4', 'größe', 'w-1/2']);
+  assert.deepEqual(classNamesFromCss('.a\\31  .b'), ['a1', 'b']);
+  assert.deepEqual(classNamesFromCss('.5, .\\[\\&\\>svg\\]\\:size-4'), ['[&>svg]:size-4']);
+});
+
+test('dead class detail explains arbitrary values that a space split apart', () => {
+  const compiled = new Set(['opacity-50']);
+  assert.equal(deadClassDetail("bg-[url('data:image/svg+xml;utf8,<svg", compiled).reason, 'split-arbitrary-value');
+  assert.equal(deadClassDetail('xmlns=%22http://www.w3.org/2000/svg%22', compiled).reason, 'split-arbitrary-value');
+  assert.match(deadClassDetail('24%22>', compiled).hint, /underscores/u);
+  assert.equal(deadClassDetail('data-[state=open]:opacity-50', compiled).reason, 'undefined-variant');
+  assert.equal(deadClassDetail("after:content-['x']", compiled).reason, 'missing-css');
+});
+
+test('clone hydration waits for late evidence and stops at an error marker', async () => {
+  const fakePage = (results) => {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      evaluate: async () => {
+        calls += 1;
+        const next = results[Math.min(calls - 1, results.length - 1)];
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      waitForTimeout: async () => {},
+    };
+  };
+  const pending = { hydrated: false, hydrationEvidence: 'unverified', hydrationError: false };
+  const late = fakePage([pending, new Error('Execution context was destroyed'), { hydrated: true, hydrationEvidence: 'marker', hydrationError: false }]);
+  assert.equal((await waitForHydration(late, { timeoutMs: 1000, pollMs: 1 })).hydrationEvidence, 'marker');
+  assert.equal(late.calls(), 3);
+  const broken = fakePage([{ hydrated: false, hydrationEvidence: 'unverified', hydrationError: true }]);
+  assert.equal((await waitForHydration(broken, { timeoutMs: 1000, pollMs: 1 })).hydrated, false);
+  assert.equal(broken.calls(), 1, 'an error marker ends the wait');
+  const never = fakePage([pending]);
+  assert.equal((await waitForHydration(never, { timeoutMs: 20, pollMs: 5 })).hydrated, false);
+  assert.ok(never.calls() > 1);
+  await assert.rejects(() => waitForHydration(fakePage([new Error('gone')]), { timeoutMs: 0 }), /gone/u);
 });
 
 test('run store is immutable after close or failure and refs resolve to concrete IDs', () => {

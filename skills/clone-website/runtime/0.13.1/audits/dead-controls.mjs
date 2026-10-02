@@ -69,6 +69,7 @@ export function classifyControl({ actionability = 'reachable', disabled = false,
   if (disabled) return 'disabled';
   if (actionability !== 'reachable') return 'unreachable';
   if (alreadyActive) return 'already-active';
+  if (after.fileChooserOpened) return 'file-chooser';
   if (hasEffect(after)) {
     if (after.urlChanged) return 'link/navigation';
     if (after.overlayOpened) return 'overlay';
@@ -78,6 +79,9 @@ export function classifyControl({ actionability = 'reachable', disabled = false,
     if (after.networkObserved) return 'network';
     return 'state change';
   }
+  // A typed value, a selection, or a checked state that sticks is the
+  // control's own effect, even when nothing else on the page reacts.
+  if (after.valueChanged) return 'input';
   return 'dead';
 }
 
@@ -170,19 +174,26 @@ export async function pageEffectSignature(page, network = { count: 0, requests: 
       .map((element) => `${element.tagName}:${element.getAttribute('id') ?? ''}:${element.getAttribute('role') ?? ''}:${element.getAttribute('aria-expanded') ?? ''}:${element.getAttribute('aria-pressed') ?? ''}:${element.getAttribute('aria-selected') ?? ''}:${element.getAttribute('aria-hidden') ?? ''}`)
       .join('|');
     const style = [...document.querySelectorAll('[class], [style]')]
-      .map((element) => `${element.tagName}:${element.className?.toString() ?? ''}:${element.getAttribute('style') ?? ''}`)
+      .map((element) => `${element.tagName}:${element.getAttribute('class') ?? ''}:${element.getAttribute('style') ?? ''}`)
       .join('|');
     const structure = [...document.querySelectorAll('button, a, input, select, textarea, [role]')]
       .map((element) => `${element.tagName}:${element.getAttribute('role') ?? ''}:${element.getAttribute('aria-label') ?? ''}:${element.textContent?.trim() ?? ''}`)
       .join('|');
+    // Closed dialogs and popovers stay in the DOM; only open ones are overlays.
+    const isOpenOverlay = (element) => {
+      if (element.tagName === 'DIALOG') return element.open;
+      if (element.hasAttribute('popover')) return element.matches(':popover-open');
+      return element.checkVisibility({ visibilityProperty: true });
+    };
+    const openOverlays = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"], dialog, [popover], [data-overlay="true"]')].filter(isOpenOverlay);
     return {
       url: location.href,
       dom: html,
       aria,
       style,
       structure,
-      overlayCount: document.querySelectorAll('[role="dialog"], [role="menu"], dialog, [data-overlay="true"]').length,
-      overlays: [...document.querySelectorAll('[role="dialog"], [role="menu"], dialog, [data-overlay="true"]')].map((element) => ({
+      overlayCount: openOverlays.length,
+      overlays: openOverlays.map((element) => ({
         role: element.getAttribute('role') || element.tagName.toLowerCase(),
         name: (element.getAttribute('aria-label') || element.getAttribute('title') || element.textContent || '').replace(/\s+/gu, ' ').trim().slice(0, 160),
         id: element.getAttribute('id'),
@@ -217,7 +228,16 @@ async function describeControl(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
       selector: element.getAttribute('data-testid') ? `[data-testid="${element.getAttribute('data-testid')}"]` : null,
       controlClass: element.getAttribute('data-control-class') || 'default',
       href: element.getAttribute('href'),
-      alreadyActive: element.getAttribute('aria-pressed') === 'true' || element.getAttribute('aria-selected') === 'true' || element.getAttribute('data-state') === 'active',
+      // A current page, a selected tab, or a checked radio does nothing when it
+      // is activated again. A checkbox or switch toggles, so it is not included.
+      alreadyActive: element.getAttribute('aria-pressed') === 'true'
+        || element.getAttribute('aria-selected') === 'true'
+        || !['', 'false'].includes(element.getAttribute('aria-current') ?? 'false')
+        || (['radio', 'menuitemradio'].includes(role) && (element.getAttribute('aria-checked') === 'true' || ['checked', 'on'].includes(element.getAttribute('data-state'))))
+        || (tag === 'input' && element.type === 'radio' && element.checked)
+        || element.getAttribute('data-state') === 'active',
+      // Controls inside a closed dialog or popover cannot act until it opens.
+      insideClosedOverlay: Boolean(element.closest('dialog:not([open]), [popover]:not(:popover-open)')),
       structure: {
         tag,
         type: element.getAttribute('type'),
@@ -267,12 +287,64 @@ async function controlState(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
       selected: element.getAttribute('aria-selected'),
       expanded: element.getAttribute('aria-expanded'),
       checked: element.getAttribute('aria-checked'),
+      current: element.getAttribute('aria-current'),
       hidden: element.getAttribute('aria-hidden'),
       disabled: element.getAttribute('aria-disabled'),
     },
     className: element.getAttribute('class'),
     dataState: element.getAttribute('data-state'),
   }), undefined, { timeout });
+}
+
+// Form values are hashed: the audit keeps evidence that a value changed, never
+// the value itself.
+async function formState(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
+  const state = await locator.evaluate((element) => ({
+    value: 'value' in element ? String(element.value) : null,
+    checked: 'checked' in element ? Boolean(element.checked) : null,
+    selectedIndex: 'selectedIndex' in element ? element.selectedIndex : null,
+  }), undefined, { timeout });
+  return { valueSha256: state.value === null ? null : sha256(state.value), checked: state.checked, selectedIndex: state.selectedIndex };
+}
+
+function formStateChanged(before, after) {
+  if (!before || !after) return false;
+  return before.valueSha256 !== after.valueSha256 || before.checked !== after.checked || before.selectedIndex !== after.selectedIndex;
+}
+
+// Probe values by input type. Each one is valid for its type, so the browser
+// keeps it unless the application rejects or resets it.
+const FILL_VALUES = Object.freeze({
+  '': 'Probe',
+  text: 'Probe',
+  search: 'Probe',
+  password: 'Probe',
+  email: 'probe@example.test',
+  url: 'https://example.test/',
+  tel: '5550100',
+  number: '7',
+  range: '7',
+  color: '#336699',
+  date: '2026-01-15',
+  time: '12:30',
+  'datetime-local': '2026-01-15T12:30',
+  month: '2026-01',
+  week: '2026-W03',
+});
+
+// Clicking cannot type or choose an option, so text fields are filled and
+// selects get a different option. Everything else, including checkboxes and
+// file pickers, is clicked.
+async function trialInteraction(locator, description, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
+  const tag = description.structure?.tag;
+  const type = String(description.structure?.type ?? '').toLowerCase();
+  if (tag === 'textarea') return { kind: 'fill', value: FILL_VALUES.text };
+  if (tag === 'input' && Object.hasOwn(FILL_VALUES, type)) return { kind: 'fill', value: FILL_VALUES[type] };
+  if (tag === 'select') {
+    const value = await locator.evaluate((element) => [...element.options].find((option) => !option.disabled && !option.selected)?.value ?? null, undefined, { timeout }).catch(() => null);
+    if (value !== null) return { kind: 'select', value };
+  }
+  return { kind: 'click' };
 }
 
 async function isDisabled(locator, timeout = DEFAULT_LOOKUP_TIMEOUT_MS) {
@@ -375,13 +447,13 @@ export async function auditDeadControls(page, {
       await trialPage.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
       if (validateTrial) {
         let invalidReason = response && [401, 403].includes(response.status())
-          ? `Source trial returned authentication status ${response.status()}`
+          ? `Trial returned authentication status ${response.status()}`
           : null;
         if (!invalidReason) {
           try {
             const validation = await validateTrial(trialPage, { route, expected });
             if (typeof validation === 'string') invalidReason = validation;
-            else if (validation && validation.valid === false) invalidReason = validation.reason ?? 'Source trial identity validation failed';
+            else if (validation && validation.valid === false) invalidReason = validation.reason ?? 'Trial validation failed';
           } catch (error) {
             invalidReason = error instanceof Error ? error.message : String(error);
           }
@@ -427,6 +499,7 @@ export async function auditDeadControls(page, {
         visible,
         enabled: !disabled,
       };
+      if (description.insideClosedOverlay) return { ...base, category: 'inert-overlay', actionExecuted: false };
       if (!visible) return { ...base, category: 'unreachable', actionExecuted: false };
       if (disabled) return { ...base, category: 'disabled', actionExecuted: false };
       if (description.alreadyActive) return { ...base, category: 'already-active', actionExecuted: false };
@@ -442,35 +515,49 @@ export async function auditDeadControls(page, {
       const ambientNetwork = { count: ambientRequests.length, requests: ambientRequests };
       const ambientAfter = await signature(ambientNetwork);
       const before = await signature({ count: 0, requests: [] });
+      const formBefore = await formState(locator, actionTimeout).catch(() => null);
       try {
         await locator.click({ trial: true, timeout: actionTimeout });
       } catch (error) {
         return { ...base, category: 'unreachable', actionExecuted: false, actionabilityError: safeText(error.message) };
       }
+      const interaction = await trialInteraction(locator, description, actionTimeout);
       const requests = [];
       const onRequest = (request) => {
         requests.push({ url: safeUrl(request.url()), method: request.method(), resourceType: request.resourceType() });
       };
+      // A listener makes Playwright intercept the chooser instead of opening it.
+      let fileChooserOpened = false;
+      const onFileChooser = () => { fileChooserOpened = true; };
       trialPage.on('request', onRequest);
+      trialPage.on('filechooser', onFileChooser);
       let clickError = null;
       try {
-        await locator.click({ timeout: actionTimeout });
+        if (interaction.kind === 'fill') await locator.fill(interaction.value, { timeout: actionTimeout });
+        else if (interaction.kind === 'select') await locator.selectOption(interaction.value, { timeout: actionTimeout });
+        else await locator.click({ timeout: actionTimeout });
         await trialPage.waitForTimeout(effectWaitMs);
       } catch (error) {
         clickError = safeText(error.message);
       } finally {
         trialPage.off('request', onRequest);
+        trialPage.off('filechooser', onFileChooser);
       }
       const network = { count: requests.length, requests };
       // After a navigation or re-render the control may be gone; the bounded
       // lookups above return null quickly instead of waiting 30 s each.
       const after = await signature(network).catch(() => ({ ...before, network, local: null }));
       const finalState = await controlState(locator, actionTimeout).catch(() => null);
-      const effect = compareEffectSignatures(before, after, { ambientBefore, ambientAfter });
+      const formAfter = await formState(locator, actionTimeout).catch(() => null);
+      const effect = {
+        ...compareEffectSignatures(before, after, { ambientBefore, ambientAfter }),
+        valueChanged: formStateChanged(formBefore, formAfter),
+        fileChooserOpened,
+      };
       const category = clickError
         ? 'unreachable'
         : classifyControl({ actionability: 'reachable', disabled: false, policyOutcome: decision.outcome, after: effect, alreadyActive: description.alreadyActive });
-      return { ...base, category, actionExecuted: !clickError, effect, ...(clickError ? { actionabilityError: clickError } : {}), evidence: { ambientBefore, ambientAfter, before, after, controlBefore: initialState, controlAfter: finalState } };
+      return { ...base, category, interaction: interaction.kind, actionExecuted: !clickError, effect, ...(clickError ? { actionabilityError: clickError } : {}), evidence: { ambientBefore, ambientAfter, before, after, controlBefore: initialState, controlAfter: finalState } };
     } finally {
       await trialContext.close().catch(() => {});
     }

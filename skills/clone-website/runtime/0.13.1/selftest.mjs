@@ -9,7 +9,7 @@ import {
   setRef,
   writeArtifact,
 } from './run-store.mjs';
-import { auditDeadRuntimeClasses, deadClassDetail } from './audits/dead-classes.mjs';
+import { auditDeadRuntimeClasses, classNamesFromCss, deadClassDetail } from './audits/dead-classes.mjs';
 import { ariaOutline, compareAriaEvidence, parseAriaSnapshot } from './aria.mjs';
 import { deploymentFingerprint } from './fingerprint.mjs';
 import { compareHeadEvidence } from './head.mjs';
@@ -161,6 +161,7 @@ export async function runSelfTests() {
     assert.notEqual(bundle('app-1.js'), bundle('app-2.js'));
     assert.deepEqual(generateMediaFeatureProbes([{ kind: 'media', condition: '(hover:none)' }]).map((probe) => probe.features.touch), [false, true]);
     assert.equal(deadClassDetail('custom:opacity-50', new Set(['opacity-50'])).reason, 'undefined-variant');
+    assert.deepEqual(classNamesFromCss('.\\32 xl\\:p-4:hover'), ['2xl:p-4']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

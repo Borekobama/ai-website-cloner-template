@@ -4,14 +4,19 @@ function unescapeCssIdentifier(value) {
     .replace(/\\([^\n])/gu, '$1');
 }
 
+// A CSS escape is a hex code point with one optional trailing whitespace
+// character (`.\32 xl\:p-4` is the class "2xl:p-4"), or any other escaped
+// character. Non-ASCII characters are name characters without escaping.
+const CSS_ESCAPE = String.raw`\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f0-9a-fA-F]`;
+const CLASS_PATTERN = new RegExp(String.raw`\.((?:--|-?(?:${CSS_ESCAPE}|[A-Za-z_]|[^\x00-\x7F]))(?:${CSS_ESCAPE}|[A-Za-z0-9_-]|[^\x00-\x7F])*)`, 'gu');
+
 export function classNamesFromCss(cssText) {
   if (typeof cssText !== 'string') return [];
   const classes = new Set();
   // A colon that is escaped belongs to the class name (for example a
   // Tailwind variant); an unescaped colon starts a pseudo-class and must not
   // become part of the runtime class name.
-  const classPattern = /\.((?:\\.|[A-Za-z_-])(?:\\.|[A-Za-z0-9_-])*)/gu;
-  for (const match of cssText.matchAll(classPattern)) {
+  for (const match of cssText.matchAll(CLASS_PATTERN)) {
     const name = unescapeCssIdentifier(match[1]);
     if (name) classes.add(name);
   }
@@ -46,10 +51,32 @@ export function splitVariantClass(className) {
   return { variants: parts.slice(0, -1), utility: parts.at(-1).replace(/^!|!$/gu, '') };
 }
 
+// A space inside an arbitrary value (for example a data-URI in bg-[url(...)])
+// splits one class into several tokens: one with an unclosed bracket and others
+// with markup or URL-encoded quotes outside any bracket.
+export function isSplitArbitraryValue(className) {
+  let depth = 0;
+  let outside = '';
+  for (const character of String(className)) {
+    if (character === '[' || character === '(') depth += 1;
+    else if (character === ']' || character === ')') depth -= 1;
+    else if (depth === 0) outside += character;
+    if (depth < 0) return true;
+  }
+  return depth !== 0 || /%22|%27|[<>="']/u.test(outside);
+}
+
 // A dead variant class whose utility compiles elsewhere on the route points at
 // the variant. When no compiled class uses that variant at all, the variant is
 // most likely never defined; otherwise this class was likely built dynamically.
 export function deadClassDetail(className, compiledClasses) {
+  if (isSplitArbitraryValue(className)) {
+    return {
+      className,
+      reason: 'split-arbitrary-value',
+      hint: 'A space inside an arbitrary value split it into several classes. Use underscores instead of spaces, or move the value into CSS.',
+    };
+  }
   const parsed = splitVariantClass(className);
   if (!parsed || !compiledClasses.has(parsed.utility)) return { className, reason: 'missing-css' };
   const compiledVariants = new Set();

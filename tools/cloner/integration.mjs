@@ -139,6 +139,33 @@ async function main() {
     assert.notEqual(unverified.code, 0, 'unverified hydration route must fail clone measurement');
     assert.match(unverified.stderr, /Clone runtime is not hydrated on \/unverified-hydration; evidence=unverified/);
 
+    // A marker without a Next.js runtime and a marker that turns true late
+    // both pass. Typed trials and inert dialogs get their own categories.
+    const formsMeasurement = await runCli(parityRoot, [
+      'measure', '--target', 'clone', '--url', clone.url, '--routes', '/forms,/plain-hydrated,/late-hydration',
+      ...commonArgs(parityRoot, policyPath),
+    ]);
+    assert.equal(formsMeasurement.code, 0, `marker-only and late hydration must pass:\n${formsMeasurement.stderr}`);
+    const formsAudit = await audit(parityRoot, policyPath, 'clone', formsMeasurement.json.runId);
+    const formsCategories = new Map(formsAudit.audits.flatMap((entry) => entry.observations).map((observation) => [observation.name, observation.category]));
+    const expectedFormCategories = {
+      'Forms page': 'already-active',
+      'Plain field': 'input',
+      'Filter items': 'DOM change',
+      'Sort order': 'input',
+      'Accept terms': 'input',
+      Day: 'already-active',
+      Week: 'DOM change',
+      'Upload file': 'file-chooser',
+      'Open dialog': 'overlay',
+      'Dialog action': 'inert-overlay',
+      'Late action': 'DOM change',
+    };
+    assert.deepEqual(Object.fromEntries(Object.keys(expectedFormCategories).map((name) => [name, formsCategories.get(name)])), expectedFormCategories);
+    const formsClasses = await runCli(parityRoot, ['audit', 'dead-classes', '--target', 'clone', '--run', formsMeasurement.json.runId, ...commonArgs(parityRoot, policyPath)]);
+    assert.equal(formsClasses.code, 0, formsClasses.stderr);
+    assert.deepEqual(formsClasses.json.audit.routes.find((entry) => entry.route === '/forms').deadClasses, [], 'SVG and escaped leading-digit classes must resolve');
+
     const modules = ['--visual-regions', visualConfigPath, '--motion-sample', '--dom-snapshot', '--aria', '--head', '--performance'];
     const sourceMeasurement = await measure(parityRoot, policyPath, 'source', source.url, ['--profile', profile, '--inventory', ...modules]);
     const cloneMeasurement = await measure(parityRoot, policyPath, 'clone', clone.url, ['--inventory', ...modules]);

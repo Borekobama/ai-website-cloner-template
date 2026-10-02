@@ -18,7 +18,7 @@ import {
   updateRun,
   writeArtifact,
 } from './run-store.mjs';
-import { auditDeadRuntimeClasses } from './audits/dead-classes.mjs';
+import { auditDeadRuntimeClasses, classNamesFromCss } from './audits/dead-classes.mjs';
 import { redactForPersistence, safeUrl } from './redact.mjs';
 import { normalizePolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
@@ -115,12 +115,13 @@ export async function collectControls(page, route) {
         enabled: !element.hasAttribute('disabled') && element.getAttribute('aria-disabled') !== 'true',
         controlClass,
         href,
-        state: element.getAttribute('aria-pressed') || element.getAttribute('aria-selected') || element.getAttribute('data-state'),
+        state: element.getAttribute('aria-pressed') || element.getAttribute('aria-selected') || element.getAttribute('aria-checked') || element.getAttribute('aria-current') || element.getAttribute('data-state'),
         ariaState: {
           pressed: element.getAttribute('aria-pressed'),
           selected: element.getAttribute('aria-selected'),
           expanded: element.getAttribute('aria-expanded'),
           checked: element.getAttribute('aria-checked'),
+          current: element.getAttribute('aria-current'),
           hidden: element.getAttribute('aria-hidden'),
           disabled: element.getAttribute('aria-disabled'),
         },
@@ -137,19 +138,16 @@ export async function collectControls(page, route) {
 }
 
 export async function collectClasses(page, route) {
-  return page.evaluate((currentRoute) => {
-    const runtimeClasses = [...new Set([...document.querySelectorAll('[class]')].flatMap((element) => String(element.className || '').split(/\s+/u).filter(Boolean)))].sort();
-    const compiledClasses = new Set();
+  const { selectorTexts, ...observation } = await page.evaluate((currentRoute) => {
+    // getAttribute keeps SVG classes as text; their className is an SVGAnimatedString.
+    const runtimeClasses = [...new Set([...document.querySelectorAll('[class]')].flatMap((element) => (element.getAttribute('class') || '').split(/\s+/u).filter(Boolean)))].sort();
+    const selectorTexts = new Set();
     const stylesheetSources = [];
     let stylesheetsReadable = 0;
     let stylesheetsUnreadable = 0;
-    const classPattern = /\.((?:\\.|[A-Za-z_-])(?:\\.|[A-Za-z0-9_-])*)/gu;
     const collectRules = (rules) => {
       for (const rule of [...rules]) {
-        const selectorText = typeof rule.selectorText === 'string' ? rule.selectorText : '';
-        for (const match of selectorText.matchAll(classPattern)) {
-          compiledClasses.add(match[1].replace(/\\([0-9a-f]{1,6})\s?/giu, (_, codePoint) => String.fromCodePoint(Number.parseInt(codePoint, 16))).replace(/\\([^\n])/gu, '$1'));
-        }
+        if (typeof rule.selectorText === 'string' && rule.selectorText) selectorTexts.add(rule.selectorText);
         if (rule.cssRules) collectRules(rule.cssRules);
       }
     };
@@ -167,7 +165,7 @@ export async function collectClasses(page, route) {
     return {
       route: currentRoute,
       runtimeClasses,
-      compiledClasses: [...compiledClasses].sort(),
+      selectorTexts: [...selectorTexts],
       stylesheetSources,
       stylesheetsTotal: stylesheetSources.length,
       stylesheetsReadable,
@@ -175,6 +173,9 @@ export async function collectClasses(page, route) {
       cssCoverageComplete: stylesheetsUnreadable === 0,
     };
   }, route);
+  // Selectors are tokenized here, so the measurement and the dead-class audit
+  // share one escape-aware parser.
+  return { ...observation, compiledClasses: classNamesFromCss(selectorTexts.join('\n')) };
 }
 
 export async function runtimeHealth(page, kind, options = {}) {
@@ -182,7 +183,8 @@ export async function runtimeHealth(page, kind, options = {}) {
     const scripts = [...document.scripts].filter((script) => script.src || script.textContent?.trim());
     const explicit = config.hydrationSelector ? Boolean(document.querySelector(config.hydrationSelector)) : null;
     const explicitMarker = document.documentElement.getAttribute('data-hydrated');
-    const explicitFailure = explicitMarker === 'false' || Boolean(document.querySelector('[data-next-error], [data-hydration-error]'));
+    const hydrationError = Boolean(document.querySelector('[data-next-error], [data-hydration-error]'));
+    const explicitFailure = explicitMarker === 'false' || hydrationError;
     const nextRuntime = scripts.some((script) => /\/_next\//u.test(script.src) || /__next_f\.push/u.test(script.textContent ?? ''));
     const reactAttached = [...document.querySelectorAll('html, body, #__next, [data-nextjs-scroll-focus-boundary], [data-reactroot], body *')]
       .slice(0, 250)
@@ -201,6 +203,7 @@ export async function runtimeHealth(page, kind, options = {}) {
       clientJsLoaded: nextRuntime,
       hydrated: !explicitFailure && ['selector', 'marker', 'react-next-runtime'].includes(hydrationEvidence),
       hydrationEvidence,
+      hydrationError,
       explicitHydrationSelector: config.hydrationSelector ?? null,
       reactAttached,
       nextRuntime,
@@ -212,6 +215,31 @@ export async function runtimeHealth(page, kind, options = {}) {
     };
   }, { ...options, kind });
   return result;
+}
+
+export const DEFAULT_HYDRATION_TIMEOUT_MS = 10000;
+
+// Development bundles can hydrate after the load events settle, so a clone gets
+// a bounded wait. An explicit error marker ends the wait because it does not
+// clear on its own; data-hydrated="false" may still turn "true". A reload during
+// the wait (for example a development rebuild) is retried until the deadline.
+export async function waitForHydration(page, { hydrationSelector = null, timeoutMs = DEFAULT_HYDRATION_TIMEOUT_MS, pollMs = 250 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let health = null;
+    let failure = null;
+    try {
+      health = await runtimeHealth(page, 'clone', { hydrationSelector });
+    } catch (error) {
+      failure = error;
+    }
+    if (health && (health.hydrated || health.hydrationError)) return health;
+    if (Date.now() >= deadline) {
+      if (health) return health;
+      throw failure;
+    }
+    await page.waitForTimeout(pollMs);
+  }
 }
 
 function createRequestTracker(page) {
@@ -263,9 +291,33 @@ async function waitForServer(url, timeoutMs = 30000) {
   throw new Error(`Managed clone server did not become healthy: ${lastError?.message ?? 'timeout'}`);
 }
 
-export async function startManagedCloneServer({ root = process.cwd(), port, command = 'dev', timeoutMs = 30000, cleanNext = true } = {}) {
+function runNpmScript(root, script, timeoutMs) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn('npm', ['run', script], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, BROWSER: 'none' } });
+    let output = '';
+    child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
+    child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
+    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolveRun();
+      else reject(new Error(`npm run ${script} failed (${signal ?? `exit ${code}`})${output ? `\n${output.slice(-2000)}` : ''}`));
+    });
+  });
+}
+
+export const MANAGED_SERVER_COMMANDS = ['dev', 'start'];
+
+export async function startManagedCloneServer({ root = process.cwd(), port, command = 'dev', timeoutMs = 30000, buildTimeoutMs = 600000, cleanNext = true } = {}) {
+  if (!MANAGED_SERVER_COMMANDS.includes(command)) throw new Error(`Managed server command must be dev or start, received ${command}`);
   const actualPort = port ?? await findFreePort();
   if (cleanNext) rmSync(resolve(root, '.next'), { recursive: true, force: true });
+  // A production server needs a fresh build of the current tree.
+  if (command === 'start') await runNpmScript(root, 'build', buildTimeoutMs);
   const child = spawn('npm', ['run', command, '--', '--hostname', '127.0.0.1', '--port', String(actualPort)], {
     cwd: root,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -503,6 +555,8 @@ export async function measureTarget({
   allowUnauthenticated = false,
   browserOptions = {},
   server = null,
+  serverCommand = 'dev',
+  hydrationTimeoutMs = DEFAULT_HYDRATION_TIMEOUT_MS,
   inventoryRunId = null,
   authoritativeInventory = false,
   visualConfig = null,
@@ -582,9 +636,9 @@ export async function measureTarget({
   try {
     let baseUrl = base.origin;
     if (target === 'clone' && server === 'managed') {
-      managedServer = await startManagedCloneServer({ root });
+      managedServer = await startManagedCloneServer({ root, command: serverCommand });
       baseUrl = managedServer.url;
-      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, profileId, tenant, role, modules, hydrationSelector: hydrationSelector ?? null, ...(measurementViewport ? { viewport: measurementViewport } : {}), ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}), ...(visualConfigSha256 ? { visualConfigSha256 } : {}) } });
+      updateRun(root, siteKey, runId, { target: { kind: target, origin: new URL(baseUrl).origin, server: { mode: 'managed', command: serverCommand }, profileId, tenant, role, modules, hydrationSelector: hydrationSelector ?? null, ...(measurementViewport ? { viewport: measurementViewport } : {}), ...(measurementDeviceScaleFactor !== null ? { deviceScaleFactor: measurementDeviceScaleFactor } : {}), ...(visualConfigSha256 ? { visualConfigSha256 } : {}) } });
     }
     if (target === 'source' && !profileDir) {
       throw preconditionError('Source measurement requires a persistent browser profile', runId);
@@ -672,13 +726,17 @@ export async function measureTarget({
         if (target === 'source' && !allowUnauthenticated && expectedPath !== pathname) {
           throw preconditionError(`Source route ${route} resolved to unexpected state ${pathname}`, runId);
         }
-        const health = await runtimeHealth(page, target, { hydrationSelector });
+        const health = target === 'clone'
+          ? await waitForHydration(page, { hydrationSelector, timeoutMs: hydrationTimeoutMs })
+          : await runtimeHealth(page, target, { hydrationSelector });
         if (target === 'source' && !allowUnauthenticated && health.loginForm) {
           throw preconditionError(`Source session is not authenticated on ${route}`, runId);
         }
         const chunkFailures = tracker.statuses.filter((entry) => entry.status >= 400 && /\/_next\/static\/chunks\//iu.test(entry.url));
         const failedScripts = tracker.failures.filter((entry) => entry.resourceType === 'script' || /\/_next\/static\//iu.test(entry.url));
-        if (target === 'clone' && (!health.clientJsLoaded || !health.hydrated || chunkFailures.length || failedScripts.length)) {
+        // Selector and marker evidence prove hydration without a Next.js runtime;
+        // react-next-runtime evidence already requires one.
+        if (target === 'clone' && (!health.hydrated || chunkFailures.length || failedScripts.length)) {
           throw preconditionError(`Clone runtime is not hydrated on ${route}; evidence=${health.hydrationEvidence}`, runId);
         }
         const identity = target === 'source' ? await sourceIdentity(page, { tenant, role }) : null;

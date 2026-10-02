@@ -21,6 +21,7 @@ const NON_CLOSING_CONTROL_CATEGORIES = new Set([
   'disabled',
   'unreachable',
   'already-active',
+  'inert-overlay',
 ]);
 
 function withoutRunIds(value) {

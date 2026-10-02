@@ -23,7 +23,15 @@ import {
   stableFindingId,
   summarizeFindings,
 } from './ledger.mjs';
-import { measureTarget, runtimeHealth, sourceIdentity } from './measure.mjs';
+import {
+  DEFAULT_HYDRATION_TIMEOUT_MS,
+  MANAGED_SERVER_COMMANDS,
+  measureTarget,
+  runtimeHealth,
+  sourceIdentity,
+  startManagedCloneServer,
+  waitForHydration,
+} from './measure.mjs';
 import { loadPolicy, policySha256 } from './policy.mjs';
 import { runSelfTests } from './selftest.mjs';
 import { normalizeVisualRegionConfig } from './visual-regions.mjs';
@@ -83,7 +91,9 @@ Measure options:
   --resume-run <run-id>           Reuse compatible route evidence from a failed run; source
                                   routes are reused only with a matching deployment fingerprint
   --server existing|managed      Clone server mode (default: existing)
+  --server-command dev|start     Managed server script; start runs npm run build first (default: dev)
   --hydration-selector <css>     Optional explicit clone hydration marker
+  --hydration-timeout <ms>       Wait this long for clone hydration evidence (default: 10000)
   --visual-regions <path>        Versioned region-scoped visual measurement config
   --motion                      Capture declared motion/state evidence
   --motion-sample               Capture deterministic Web Animations API samples with --motion
@@ -109,6 +119,11 @@ Audit options:
   --profile <path>               Persistent source profile when auditing source
   --trial-concurrency <n>        Parallel clone control trials, 1-16 (default: 4); source
                                  trials always run one at a time
+  --server existing|managed      Clone audit server (default: existing, the measured origin);
+                                 managed starts its own server for the audit
+  --server-command dev|start     Managed server script (default: dev); start builds first and
+                                 avoids development hydration races
+  --hydration-timeout <ms>       Wait this long for clone hydration evidence (default: 10000)
 
 Drift options:
   --run <run-id|current>          Measurement run whose routes are fingerprinted again
@@ -320,7 +335,8 @@ async function commandMeasure(options) {
     profileId: options['profile-id'],
     policy,
     hydrationSelector: options['hydration-selector'] ?? null,
-    server: options.server ?? 'existing',
+    ...serverOptions(options),
+    hydrationTimeoutMs: hydrationTimeoutOption(options),
     inventoryRunId,
     authoritativeInventory: Boolean(options.inventory),
     resumeRunId: options['resume-run'] ? String(options['resume-run']) : null,
@@ -335,6 +351,21 @@ async function commandMeasure(options) {
     performanceMetrics: Boolean(options.performance),
   });
   jsonOutput({ runId: result.manifest.runId, status: result.manifest.status, siteKey, target, ...(routeSource ? { routeSource } : {}), coverage: result.coverage });
+}
+
+function serverOptions(options) {
+  const server = options.server ?? 'existing';
+  if (!['existing', 'managed'].includes(server)) throw new Error('--server must be existing or managed');
+  const serverCommand = options['server-command'] ?? 'dev';
+  if (!MANAGED_SERVER_COMMANDS.includes(serverCommand)) throw new Error('--server-command must be dev or start');
+  return { server, serverCommand };
+}
+
+function hydrationTimeoutOption(options) {
+  if (options['hydration-timeout'] === undefined) return DEFAULT_HYDRATION_TIMEOUT_MS;
+  const value = Number(options['hydration-timeout']);
+  if (!Number.isInteger(value) || value < 0 || value > 120000) throw new Error('--hydration-timeout must be an integer from 0 to 120000 milliseconds');
+  return value;
 }
 
 function trialConcurrencyOption(options) {
@@ -399,8 +430,25 @@ async function commandAudit(options, auditName) {
   createRun({ root, siteKey, runId: auditRunId, kind: 'audit', target: auditTarget, scope: { parentRunId: runId, inventoryRunId: sourceManifest.scope.inventoryRunId ?? null, routesRequested: routes, routesCompleted: [], routesFailed: [] }, policySha256: policySha256(policy) });
   writeArtifact(root, siteKey, auditRunId, 'policy.json', policy, { kind: 'policy-snapshot' });
   let context;
+  let managedServer = null;
   try {
     if (target === 'source' && !options.profile) throw new Error('Source control audits require --profile and a policy-reviewed persistent context');
+    const { server, serverCommand } = serverOptions(options);
+    const hydrationSelector = sourceManifest.target.hydrationSelector ?? null;
+    const hydrationTimeoutMs = hydrationTimeoutOption(options);
+    let origin = sourceManifest.target.origin;
+    if (server === 'managed') {
+      if (target !== 'clone') throw new Error('--server managed applies only to clone audits');
+      managedServer = await startManagedCloneServer({ root, command: serverCommand });
+      origin = managedServer.url;
+      updateRun(root, siteKey, auditRunId, { target: { ...auditTarget, origin, parentOrigin: sourceManifest.target.origin, server: { mode: 'managed', command: serverCommand } } });
+    }
+    // Clone trials wait for the same hydration evidence before they act. A
+    // trial that never hydrates is invalid, not dead.
+    const cloneTrialReady = async (trialPage) => {
+      const health = await waitForHydration(trialPage, { hydrationSelector, timeoutMs: hydrationTimeoutMs });
+      return health.hydrated ? { valid: true } : { valid: false, reason: `Clone trial is not hydrated; evidence=${health.hydrationEvidence}` };
+    };
     context = options.profile
       ? await launchPersistentContext(String(options.profile), { headless: true })
       : await (async () => {
@@ -416,10 +464,13 @@ async function commandAudit(options, auditName) {
       const artifactKey = `${String(routeIndex + 1).padStart(4, '0')}-${sha256(route).slice(0, 12)}`;
       const expectedRoute = expectedRoutes.find((entry) => entry.route === route);
       try {
-        const response = await page.goto(new URL(route, sourceManifest.target.origin).toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const response = await page.goto(new URL(route, origin).toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
         if (!response || response.status() >= 400) throw new Error(`Route ${route} returned ${response?.status() ?? 'no response'}`);
-        const health = await runtimeHealth(page, target);
-        if (target === 'clone' && (!health.clientJsLoaded || !health.hydrated)) throw new Error(`Clone runtime is not hydrated on ${route}`);
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        if (target === 'clone') {
+          const health = await waitForHydration(page, { hydrationSelector, timeoutMs: hydrationTimeoutMs });
+          if (!health.hydrated) throw new Error(`Clone runtime is not hydrated on ${route}; evidence=${health.hydrationEvidence}`);
+        }
         if (target === 'source') {
           const validation = await validateSourceAuditPage(page, {
             origin: sourceManifest.target.origin,
@@ -441,7 +492,7 @@ async function commandAudit(options, auditName) {
               tenant: sourceManifest.target.tenant,
               role: sourceManifest.target.role,
             })
-            : null,
+            : cloneTrialReady,
         });
         audits.push(audit);
         writeArtifact(root, siteKey, auditRunId, `audits/dead-controls/routes/${artifactKey}.json`, audit, { kind: 'dead-control-route-audit' });
@@ -489,6 +540,7 @@ async function commandAudit(options, auditName) {
       await context.close().catch(() => {});
       await browser?.close().catch(() => {});
     }
+    await managedServer?.stop().catch(() => {});
   }
 }
 

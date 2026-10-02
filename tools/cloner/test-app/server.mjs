@@ -23,6 +23,47 @@ const COMMON_CSS = `
   @media (hover: none) { .responsive-hover-marker { display: none; } }
 `;
 
+// Typed controls, a native dialog, an SVG class, and an escaped class name
+// that starts with a digit. Source and clone serve the same page.
+const FORMS_BODY = `
+    <main class="page-shell">
+      <h1>Form fixture</h1>
+      <nav><a class="fixture-control" href="/forms" aria-current="page" aria-label="Forms page">Forms</a></nav>
+      <input class="fixture-control" type="text" aria-label="Plain field">
+      <input class="fixture-control" type="search" aria-label="Filter items" data-action="filter">
+      <ul id="filter-items"><li>Alpha</li><li>Beta</li></ul>
+      <select class="fixture-control" aria-label="Sort order"><option value="newest">Newest</option><option value="oldest">Oldest</option></select>
+      <input class="fixture-control" type="checkbox" aria-label="Accept terms">
+      <div role="radiogroup" aria-label="Range"><button class="fixture-control" role="radio" aria-checked="true" aria-label="Day">Day</button><button class="fixture-control" role="radio" aria-checked="false" aria-label="Week" data-action="range">Week</button></div>
+      <button class="fixture-control" data-action="upload" aria-label="Upload file">Upload file</button>
+      <input id="fixture-file" type="file" hidden>
+      <button class="fixture-control" data-action="open-dialog" aria-label="Open dialog">Open dialog</button>
+      <dialog id="fixture-dialog"><p>Dialog body</p><button class="fixture-control" aria-label="Dialog action">Dialog action</button></dialog>
+      <svg class="fixture-icon" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16"></rect></svg>
+      <p class="2xl:fixture-wide">Escaped leading-digit class.</p>
+    </main>
+`;
+const FORMS_CSS = '<style>.fixture-icon { width: 16px; height: 16px; } .\\32 xl\\:fixture-wide { color: teal; }</style>';
+const FORMS_SCRIPT = `
+    document.querySelector('[data-action="filter"]').addEventListener('input', (event) => {
+      const query = event.target.value.toLowerCase();
+      document.querySelectorAll('#filter-items li').forEach((item) => { item.hidden = !item.textContent.toLowerCase().includes(query); });
+    });
+    document.querySelector('[data-action="upload"]').addEventListener('click', () => document.querySelector('#fixture-file').click());
+    document.querySelector('[data-action="open-dialog"]').addEventListener('click', () => document.querySelector('#fixture-dialog').showModal());
+    document.querySelector('[data-action="range"]').addEventListener('click', (event) => {
+      document.querySelectorAll('[role="radio"]').forEach((radio) => radio.setAttribute('aria-checked', String(radio === event.currentTarget)));
+    });
+`;
+// Handlers attach and the hydration marker turns true only after a delay, like
+// a development bundle that hydrates after the load events.
+const LATE_HYDRATION_SCRIPT = `
+    setTimeout(() => {
+      document.querySelector('[data-action="late"]').addEventListener('click', () => { document.querySelector('#late-result').textContent = 'Clicked'; });
+      document.documentElement.setAttribute('data-hydrated', 'true');
+    }, 1200);
+`;
+
 function pageDocument({ route, mode, repaired, port, deployVersion }) {
   const isClone = mode === 'clone';
   const cloneNeedsRepair = isClone && !repaired;
@@ -97,13 +138,17 @@ function pageDocument({ route, mode, repaired, port, deployVersion }) {
     <main class="page-shell"><h1>Broken hydration</h1><p data-hydration-error="true">Hydration deliberately failed.</p></main>
   ` : route === '/unverified-hydration' ? `
     <main class="page-shell"><h1>Unverified hydration</h1><p>Server-rendered content with Next-looking script evidence only.</p></main>
+  ` : route === '/forms' ? FORMS_BODY : route === '/plain-hydrated' ? `
+    <main class="page-shell"><h1>Plain hydrated</h1><p>A hydration marker without a Next.js runtime.</p></main>
+  ` : route === '/late-hydration' ? `
+    <main class="page-shell"><h1>Late hydration</h1><button class="fixture-control" data-action="late" aria-label="Late action">Late action</button><p id="late-result"></p></main>
   ` : `
     <main class="page-shell"><h1>Destination</h1><p>Navigation reached its destination.</p></main>
   `;
-  const extraHead = `${route === '/incomplete-css' ? `<link rel="stylesheet" href="http://localhost:${port}/fixture-incomplete.css">` : ''}${isClone ? '<style>.motion-toggle { transform: none; rotate: 0deg; } .motion-toggle[data-state="open"] { transform: none; rotate: 90deg; }</style>' : ''}`;
+  const extraHead = `${route === '/forms' ? FORMS_CSS : ''}${route === '/incomplete-css' ? `<link rel="stylesheet" href="http://localhost:${port}/fixture-incomplete.css">` : ''}${isClone ? '<style>.motion-toggle { transform: none; rotate: 0deg; } .motion-toggle[data-state="open"] { transform: none; rotate: 90deg; }</style>' : ''}`;
   const hydrationAttribute = route === '/unverified-hydration'
     ? ''
-    : ` data-hydrated="${route === '/broken-hydration' ? 'false' : 'true'}"`;
+    : ` data-hydrated="${['/broken-hydration', '/late-hydration'].includes(route) ? 'false' : 'true'}"`;
   const homeHead = route === '/home'
     ? `<link rel="canonical" href="https://fixture.example/home"><script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Parity fixture"}</script>${cloneNeedsRepair ? '' : '<meta name="description" content="Parity fixture home">'}`
     : '';
@@ -115,6 +160,10 @@ function pageDocument({ route, mode, repaired, port, deployVersion }) {
   const crashScript = route === '/destination' && cloneNeedsRepair
     ? "setTimeout(() => { throw new Error('Fixture clone crash'); }, 0);"
     : '';
+  const nextRuntimeScript = route === '/plain-hydrated'
+    ? ''
+    : 'window.__next_f = window.__next_f || [];\n      window.__next_f.push({ fixture: true });';
+  const routeScript = route === '/forms' ? FORMS_SCRIPT : route === '/late-hydration' ? LATE_HYDRATION_SCRIPT : '';
   return `<!doctype html>
 <html${hydrationAttribute}>
   <head>
@@ -128,11 +177,11 @@ function pageDocument({ route, mode, repaired, port, deployVersion }) {
   <body>
     ${body}
     <script>
-      window.__next_f = window.__next_f || [];
-      window.__next_f.push({ fixture: true });
+      ${nextRuntimeScript}
       ${actionScript}
       ${noiseScript}
       ${crashScript}
+      ${routeScript}
     </script>
   </body>
 </html>`;
@@ -163,7 +212,7 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       response.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${origin}/home</loc></url><url><loc>${origin}/destination</loc></url><url><loc>https://elsewhere.example/ignored</loc></url></urlset>`);
       return;
     }
-    const allowed = new Set(['/home', '/noise', '/responsive', '/assets', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination']);
+    const allowed = new Set(['/home', '/noise', '/responsive', '/assets', '/incomplete-css', '/broken-hydration', '/unverified-hydration', '/destination', '/forms', '/plain-hydrated', '/late-hydration']);
     if (!allowed.has(requestUrl.pathname)) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       response.end('Not found');
