@@ -74,7 +74,31 @@ test('a monospace line and a bold sans-serif line are fitted to family, weight, 
     near(bold.size, 19, 0.75, 'bold size');
     assert.deepEqual(result.unavailable, []);
     assert.deepEqual(result.typeScale.map((entry) => entry.id), ['code', 'label']);
+    assert.deepEqual(result.winners.map(({ family, samples }) => [family, samples]), [['monospace', ['code']], ['sans-serif', ['label']]]);
+    assert.deepEqual([code.smoothing, result.typeScale[0].smoothing, result.rendering.smoothing], ['auto', 'auto', 'auto']);
     assert.ok(browser.isConnected(), 'a browser passed in stays open');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('candidates render with the requested font smoothing, which only macOS applies', needsChromium, async () => {
+  const browser = await launchBrowser({ headless: true });
+  try {
+    const text = 'Bright vixens jump';
+    const { raster, boxes } = await referenceShot(browser, [{ text, font: '400 22px sans-serif' }]);
+    const sample = { text, raster, geometry, box: boxes[0] };
+    const result = await fitFonts({
+      samples: [{ ...sample, id: 'default' }, { ...sample, id: 'thin', smoothing: 'antialiased' }],
+      candidates: [{ family: 'sans-serif', weights: [400], source: 'local' }],
+      browser,
+    });
+    assert.deepEqual(result.typeScale.map((entry) => entry.smoothing), ['auto', 'antialiased']);
+    const [auto, thin] = result.samples.map((entry) => entry.candidates[0]);
+    // The reference uses default smoothing, so only the antialiased candidate
+    // draws less ink than the reference (about 12 % here), and only on macOS.
+    if (process.platform === 'darwin') assert.ok(auto.densityError < 0.02 && thin.densityError > 0.05, `antialiased ${thin.densityError}, auto ${auto.densityError}`);
+    else assert.equal(thin.densityError, auto.densityError);
   } finally {
     await browser.close();
   }
@@ -124,6 +148,8 @@ test('invalid input is rejected before a browser starts', async () => {
   await assert.rejects(fitFonts({ samples: [{ ...sample, text: 'two\nlines' }] }), /one line/u);
   await assert.rejects(fitFonts({ samples: [{ ...sample, mode: 'grey' }] }), /dark or light/u);
   await assert.rejects(fitFonts({ samples: [sample], keep: 0 }), /keep/u);
+  await assert.rejects(fitFonts({ samples: [sample], smoothing: 'subpixel-antialiased' }), /smoothing must be auto or antialiased/u);
+  await assert.rejects(fitFonts({ samples: [{ ...sample, smoothing: 'none' }] }), /Font sample 1 smoothing/u);
   await assert.rejects(fitFonts({ samples: [sample], candidates: [{ family: 'Bad"Name', weights: [400] }] }), /family name/u);
   await assert.rejects(fitFonts({ samples: [sample], candidates: [{ family: 'Inter', weights: [] }] }), /weights/u);
   await assert.rejects(fitFonts({ samples: [{ ...sample, box: [100, 100, 120, 120] }] }), /outside the image/u);
@@ -147,14 +173,33 @@ test('the type scale markdown is a short builder draft', () => {
   const markdown = renderTypeScaleMarkdown({
     samples: [{ id: 'title', text: 'Plans | pricing', candidates: [], warnings: ['Ink touches the box edge (right); widen the box, this size is a lower bound'] }],
     families: [{ family: 'Inter', score: 0.0812, samples: 1 }, { family: 'Roboto', score: 0.2, samples: 1 }],
-    typeScale: [{ id: 'title', family: 'Inter', weight: 600, size: 28.5 }],
+    winners: [{ family: 'Inter', samples: ['title'], sizes: [28.5, 28.5], weights: [600] }],
+    typeScale: [{ id: 'title', family: 'Inter', weight: 600, size: 28.5, smoothing: 'auto' }],
+    rendering: { platform: 'darwin', smoothing: 'auto' },
     unavailable: [{ family: 'Lato', weights: [300, 400, 700], reason: 'the Google Fonts stylesheet did not load' }],
     warnings: [],
   });
   assert.match(markdown, /builder draft .*not evidence/u);
+  assert.match(markdown, /on macOS with `-webkit-font-smoothing: auto`/u);
+  assert.match(markdown, /## Winners by size\n[\s\S]*\| Inter \| 1 \| 28\.5 \| 600 \|/u);
   assert.match(markdown, /\| 1 \| Inter \| 0\.0812 \| 1 \|/u);
   assert.match(markdown, /## Type scale\n/u);
-  assert.match(markdown, /\| title \| Plans \\\| pricing \| Inter \| 600 \| 28\.5 \|/u);
+  assert.match(markdown, /\| title \| Plans \\\| pricing \| Inter \| 600 \| 28\.5 \| auto \|/u);
   assert.match(markdown, /Unavailable: Lato 300, 400, 700 \(the Google Fonts stylesheet did not load\)/u);
   assert.match(markdown, /- title: Ink touches the box edge/u);
+});
+
+test('winners group the samples by family with the sizes at which each family wins', () => {
+  const markdown = renderTypeScaleMarkdown({
+    typeScale: [
+      { id: 'title', family: 'Geist', weight: 400, size: 32, smoothing: 'auto' },
+      { id: 'card', family: 'Geist', weight: 400, size: 20, smoothing: 'auto' },
+      { id: 'nav', family: 'Inter', weight: 500, size: 13, smoothing: 'antialiased' },
+      { id: 'caption', family: 'Inter', weight: 400, size: 12, smoothing: 'antialiased' },
+    ],
+    rendering: { platform: 'linux', smoothing: 'auto' },
+  });
+  assert.match(markdown, /\| Geist \| 2 \| 20–32 \| 400 \|\n\| Inter \| 2 \| 12–13 \| 400, 500 \|/u);
+  assert.match(markdown, /on Linux, which ignores `-webkit-font-smoothing`/u);
+  assert.match(markdown, /\| nav \|  \| Inter \| 500 \| 13 \| antialiased \|/u);
 });

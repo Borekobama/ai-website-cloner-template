@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  OVERFLOW_CHECK_WIDTHS,
+  compareOverflowWithScreens,
   compareResponsiveEvidence,
   generateExactPixelProbes,
   normalizeCssCondition,
@@ -58,7 +60,9 @@ test('responsive probes use threshold minus one, exact threshold, and threshold 
   });
 });
 
-function responsiveBundle({ artifactPath, media = ['(min-width:768px)'], container = [], matches = [false, true, true], visibleControlCount = 1, complete = true }) {
+// `overflow` holds the overflow in px at each check width; null leaves the
+// checks out, like a run from before they existed.
+function responsiveBundle({ artifactPath, media = ['(min-width:768px)'], container = [], matches = [false, true, true], visibleControlCount = 1, complete = true, overflow = [0, 0, 0, 0, 0] }) {
   const requestedWidths = [767, 768, 769];
   return {
     complete,
@@ -88,6 +92,17 @@ function responsiveBundle({ artifactPath, media = ['(min-width:768px)'], contain
             document: { scrollWidth: 1280, scrollHeight: 720, bodyWidth: 1280, bodyHeight: 720 },
           },
         })),
+        ...(overflow ? {
+          overflow: OVERFLOW_CHECK_WIDTHS.map((width, index) => ({
+            requestedViewport: { width, height: 720 },
+            status: 'captured',
+            scrollWidth: width + overflow[index],
+            clientWidth: width,
+            overflowPx: overflow[index],
+            viewportOverflowX: 'visible',
+            offenders: overflow[index] ? [{ tag: 'div', id: null, className: 'too-wide', name: 'Too wide', left: 32, right: width + overflow[index], width: width + overflow[index] - 32 }] : [],
+          })),
+        } : {}),
       },
     }],
   };
@@ -140,4 +155,39 @@ test('responsive comparison catches layout changes under matching media conditio
   assert.deepEqual(finding.subject.viewport, { width: 767, height: 720 });
   assert.equal(report.coverage.layoutProbesCompared, 3);
   assert.equal(finding.evidence.source.locator, '#/probes/0/summary');
+});
+
+test('a clone that scrolls sideways where the source does not is a gate that names the element', () => {
+  const sourceRunId = '20260914T040000Z_source_77777777';
+  const cloneRunId = '20260914T040100Z_clone_88888888';
+  const clone = responsiveBundle({ artifactPath: 'measurements/responsive/clone.json', overflow: [282, 0, 0, 0, 0] });
+  const report = compareResponsiveEvidence(responsiveBundle({ artifactPath: 'measurements/responsive/source.json' }), clone, sourceRunId, cloneRunId);
+  const overflow = report.findings.filter((finding) => finding.category === 'responsive-overflow');
+  assert.equal(overflow.length, 1);
+  assert.equal(overflow[0].status, 'open');
+  assert.deepEqual(overflow[0].subject, { route: '/home', viewport: { width: 390, height: 720 } });
+  assert.equal(overflow[0].observed.source.overflowPx, 0);
+  assert.equal(overflow[0].observed.clone.overflowPx, 282);
+  assert.equal(overflow[0].observed.clone.offenders[0].className, 'too-wide');
+  assert.deepEqual([overflow[0].evidence.source.locator, overflow[0].evidence.clone.locator], ['#/overflow/0', '#/overflow/0']);
+  assert.equal(report.coverage.overflowChecksCompared, 5);
+  assert.equal(report.coverage.complete, true);
+  // Overflow that the source shares is not a parity finding, and a source run
+  // without overflow checks leaves the comparison incomplete.
+  const shared = compareResponsiveEvidence(responsiveBundle({ artifactPath: 'measurements/responsive/source.json', overflow: [282, 0, 0, 0, 0] }), clone, sourceRunId, cloneRunId);
+  assert.equal(shared.findings.some((finding) => finding.category === 'responsive-overflow'), false);
+  const older = compareResponsiveEvidence(responsiveBundle({ artifactPath: 'measurements/responsive/source.json', overflow: null }), clone, sourceRunId, cloneRunId);
+  assert.equal(older.findings.some((finding) => finding.category === 'responsive-overflow'), false);
+  assert.equal(older.coverage.complete, false);
+});
+
+test('against screenshots every clone overflow is new', () => {
+  const sourceRunId = '20260914T050000Z_source_99999999';
+  const cloneRunId = '20260914T050100Z_clone_aaaaaaaa';
+  const sourceRoutes = { routes: [{ route: '/home', status: 200 }] };
+  const report = compareOverflowWithScreens(sourceRoutes, responsiveBundle({ artifactPath: 'measurements/responsive/clone.json', overflow: [0, 12, 0, 0, 0] }), sourceRunId, cloneRunId);
+  assert.deepEqual(report.findings.map((finding) => [finding.status, finding.subject.viewport.width]), [['open', 768]]);
+  assert.equal(report.findings[0].evidence.source.locator, '#/routes/0');
+  assert.deepEqual([report.coverage.complete, report.coverage.overflowChecksCompared], [true, 5]);
+  assert.equal(compareOverflowWithScreens(sourceRoutes, null, sourceRunId, cloneRunId).coverage.configured, false);
 });

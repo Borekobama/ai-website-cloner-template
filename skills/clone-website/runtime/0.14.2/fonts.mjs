@@ -18,6 +18,11 @@ const SIZE_STEPS = 2;
 const MIN_SIZE = 1;
 const MAX_SIZE = 1000;
 const LOAD_TIMEOUT_MS = 20000;
+// -webkit-font-smoothing values. Only macOS applies them, and there
+// `antialiased` draws thinner strokes than `auto`, so a fitted weight holds
+// only for the smoothing it was fitted with.
+const SMOOTHING = ['auto', 'antialiased'];
+const PLATFORM_NAMES = { darwin: 'macOS', linux: 'Linux', win32: 'Windows' };
 const GENERIC_FAMILIES = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong']);
 const FONT_FILE_TYPES = { '.woff2': ['font/woff2', 'woff2'], '.woff': ['font/woff', 'woff'], '.ttf': ['font/ttf', 'truetype'], '.otf': ['font/otf', 'opentype'] };
 // Compound words come first, so SemiBold is not read as Bold.
@@ -49,7 +54,7 @@ const metric = (value) => Number(value.toFixed(4));
 const clampSize = (size) => Math.min(MAX_SIZE, Math.max(MIN_SIZE, size));
 const byScore = (left, right) => left.score - right.score || left.family.localeCompare(right.family) || left.weight - right.weight;
 
-function normalizeSamples(samples) {
+function normalizeSamples(samples, smoothing) {
   if (!Array.isArray(samples) || !samples.length) throw new Error('fitFonts needs at least one sample');
   const ids = new Set();
   return samples.map((sample, index) => {
@@ -68,7 +73,9 @@ function normalizeSamples(samples) {
     if (!finite(tracking)) throw new Error(`${label} tracking must be a letter-spacing in em`);
     const weightHint = sample.weightHint ?? null;
     if (weightHint !== null && !finite(weightHint)) throw new Error(`${label} weightHint must be a number`);
-    return { id, text: sample.text, raster, geometry, box: [...sample.box], mode, tracking, weightHint };
+    const sampleSmoothing = sample.smoothing ?? smoothing;
+    if (!SMOOTHING.includes(sampleSmoothing)) throw new Error(`${label} smoothing must be auto or antialiased`);
+    return { id, text: sample.text, raster, geometry, box: [...sample.box], mode, tracking, weightHint, smoothing: sampleSmoothing };
   });
 }
 
@@ -183,7 +190,7 @@ function loadCandidates(page, candidates, text) {
 // One line of text in the specimen element, screenshotted with enough padding
 // that the border ring probeInkBox reads as background is free of ink.
 async function renderLine(page, line) {
-  const clip = await page.evaluate(({ css, weight, size, tracking, text, mode }) => {
+  const clip = await page.evaluate(({ css, weight, size, tracking, text, mode, smoothing }) => {
     const element = document.getElementById('specimen');
     const pad = Math.ceil(size * 0.25) + 4;
     document.body.style.background = mode === 'light' ? '#000' : '#fff';
@@ -196,6 +203,7 @@ async function renderLine(page, line) {
       left: `${pad}px`,
       top: `${pad}px`,
     });
+    element.style.setProperty('-webkit-font-smoothing', smoothing);
     element.textContent = text;
     const rect = element.getBoundingClientRect();
     return { x: 0, y: 0, width: Math.ceil(rect.right + pad), height: Math.ceil(rect.bottom + pad) };
@@ -310,7 +318,7 @@ function compare(reference, measured) {
 async function fitSample(page, sample, reference, candidates, keep) {
   const geometry = { origin: { x: 0, y: 0 }, scale: sample.geometry.scale };
   const measureAt = async (candidate, weight, size) => {
-    const raster = await renderLine(page, { css: candidate.css, weight, size, tracking: sample.tracking, text: sample.text, mode: sample.mode });
+    const raster = await renderLine(page, { css: candidate.css, weight, size, tracking: sample.tracking, text: sample.text, mode: sample.mode, smoothing: sample.smoothing });
     const { measured } = measureLine(raster, geometry, [0, 0, raster.width / geometry.scale, raster.height / geometry.scale], sample.mode);
     return measured && { ...measured, size };
   };
@@ -363,6 +371,23 @@ function rankFamilies(trialsBySample) {
     .sort((left, right) => right.samples - left.samples || left.score - right.score || left.family.localeCompare(right.family));
 }
 
+// Each family that fits at least one sample best, with the sizes and weights
+// at which it wins, largest text first. Designs often set large text in one
+// family and interface text in another; the ranking averages that split away.
+function summarizeWinners(typeScale) {
+  const winners = new Map();
+  for (const entry of typeScale) {
+    const winner = winners.get(entry.family) ?? { family: entry.family, samples: [], sizes: [entry.size, entry.size], weights: [] };
+    winner.samples.push(entry.id);
+    winner.sizes = [Math.min(winner.sizes[0], entry.size), Math.max(winner.sizes[1], entry.size)];
+    if (!winner.weights.includes(entry.weight)) winner.weights.push(entry.weight);
+    winners.set(entry.family, winner);
+  }
+  return [...winners.values()]
+    .map((winner) => ({ ...winner, weights: winner.weights.sort((left, right) => left - right) }))
+    .sort((left, right) => right.sizes[1] - left.sizes[1] || left.family.localeCompare(right.family));
+}
+
 const formatTrial = (trial) => ({
   family: trial.family,
   weight: trial.weight,
@@ -376,8 +401,9 @@ const formatTrial = (trial) => ({
 
 // Identifies the font family, weight, and size of one-line text samples.
 // Unavailable fonts are reported, never thrown. A browser passed in stays open.
-export async function fitFonts({ samples, candidates = DEFAULT_FONT_CANDIDATES, fontDir = null, browser = null, keep = 24, top = 5 } = {}) {
-  const lines = normalizeSamples(samples);
+export async function fitFonts({ samples, candidates = DEFAULT_FONT_CANDIDATES, fontDir = null, browser = null, keep = 24, top = 5, smoothing = 'auto' } = {}) {
+  if (!SMOOTHING.includes(smoothing)) throw new Error('smoothing must be auto or antialiased');
+  const lines = normalizeSamples(samples, smoothing);
   if (!Number.isInteger(keep) || keep < 1) throw new Error('keep must be a positive integer');
   if (!Number.isInteger(top) || top < 1) throw new Error('top must be a positive integer');
   const pool = [...normalizeCandidates(candidates), ...(fontDir === null ? [] : fileCandidates(fontDir))];
@@ -427,7 +453,7 @@ export async function fitFonts({ samples, candidates = DEFAULT_FONT_CANDIDATES, 
     if (best.columnCorrelation < 0.8) {
       warnings.push(`No candidate matches the shape of sample ${line.id} well (best column correlation ${metric(best.columnCorrelation)}); check that the text is exact and that the box holds only this line on a plain background`);
     }
-    typeScale.push({ id: line.id, family: best.family, weight: best.weight, size: Math.round(best.size * 2) / 2 });
+    typeScale.push({ id: line.id, family: best.family, weight: best.weight, size: Math.round(best.size * 2) / 2, smoothing: line.smoothing });
   });
   return {
     samples: lines.map((line, index) => {
@@ -435,13 +461,16 @@ export async function fitFonts({ samples, candidates = DEFAULT_FONT_CANDIDATES, 
       return {
         id: line.id,
         text: line.text,
+        smoothing: line.smoothing,
         reference: measured && { ink: measured.ink, width: measured.width, height: measured.height, density: metric(measured.density) },
         candidates: trialsBySample[index].filter((trial) => trial.fitted).sort(byScore).slice(0, top).map(formatTrial),
         warnings: [...probe.warnings],
       };
     }),
     families: families.map((entry) => ({ ...entry, score: metric(entry.score) })),
+    winners: summarizeWinners(typeScale),
     typeScale,
+    rendering: { platform: process.platform, smoothing },
     unavailable: [...unavailable.values()].sort((left, right) => left.family.localeCompare(right.family)),
     warnings,
   };
@@ -453,25 +482,41 @@ const cell = (value) => String(value ?? '').replace(/\s+/gu, ' ').replace(/[\\|]
 export function renderTypeScaleMarkdown(result) {
   const families = result?.families ?? [];
   const typeScale = result?.typeScale ?? [];
+  const winners = result?.winners ?? summarizeWinners(typeScale);
   const texts = new Map((result?.samples ?? []).map((sample) => [sample.id, sample.text]));
   const lines = [
     '# Type scale draft',
     '',
     'This is a builder draft fitted from rendered font candidates, not evidence. Confirm the family, weights, and sizes against source CSS or a measured run.',
-    '',
-    '## Family ranking',
-    '',
   ];
+  const rendering = result?.rendering;
+  if (rendering) {
+    const platform = PLATFORM_NAMES[rendering.platform] ?? rendering.platform;
+    lines.push('', rendering.platform === 'darwin'
+      ? `Candidates were rendered in Chromium on ${platform} with \`-webkit-font-smoothing: ${rendering.smoothing}\`, except samples that set their own. On macOS, \`antialiased\` draws thinner strokes than \`auto\`, so give fitted text the smoothing it was fitted with.`
+      : `Candidates were rendered in Chromium on ${platform}, which ignores \`-webkit-font-smoothing\`. On macOS, \`antialiased\` draws thinner strokes than \`auto\`, so fit on macOS when the clone sets \`antialiased\`.`);
+  }
+  lines.push('', '## Winners by size', '');
+  if (winners.length) {
+    lines.push('Each family that fits at least one sample best, with the sizes and weights at which it wins. Designs often set large text in one family and interface text in another, so choose a family for each size range from this table.', '', '| Family | Samples | Sizes (px) | Weights |', '| --- | ---: | --- | --- |');
+    for (const winner of winners) {
+      const sizes = winner.sizes[0] === winner.sizes[1] ? `${winner.sizes[0]}` : `${winner.sizes[0]}–${winner.sizes[1]}`;
+      lines.push(`| ${cell(winner.family)} | ${winner.samples.length} | ${sizes} | ${winner.weights.join(', ')} |`);
+    }
+  } else {
+    lines.push('No sample was fitted.');
+  }
+  lines.push('', '## Family ranking', '');
   if (families.length) {
-    lines.push('Lower scores fit better.', '', '| Rank | Family | Mean score | Samples |', '| ---: | --- | ---: | ---: |');
+    lines.push('Lower scores fit better. Each score is the mean of the best fitted score of the family on each sample, so it hides a family that wins only the large or only the small samples.', '', '| Rank | Family | Mean score | Samples |', '| ---: | --- | ---: | ---: |');
     families.slice(0, 10).forEach((entry, index) => lines.push(`| ${index + 1} | ${cell(entry.family)} | ${entry.score} | ${entry.samples} |`));
   } else {
     lines.push('No candidate font was fitted.');
   }
   lines.push('', '## Type scale', '');
   if (typeScale.length) {
-    lines.push('Each sample with its best fitted font. Sizes are rounded to 0.5 px.', '', '| Sample | Text | Family | Weight | Size (px) |', '| --- | --- | --- | ---: | ---: |');
-    for (const entry of typeScale) lines.push(`| ${cell(entry.id)} | ${cell(texts.get(entry.id))} | ${cell(entry.family)} | ${entry.weight} | ${entry.size} |`);
+    lines.push('Each sample with its best fitted font. Sizes are rounded to 0.5 px.', '', '| Sample | Text | Family | Weight | Size (px) | Smoothing |', '| --- | --- | --- | ---: | ---: | --- |');
+    for (const entry of typeScale) lines.push(`| ${cell(entry.id)} | ${cell(texts.get(entry.id))} | ${cell(entry.family)} | ${entry.weight} | ${entry.size} | ${cell(entry.smoothing)} |`);
   } else {
     lines.push('No type scale.');
   }

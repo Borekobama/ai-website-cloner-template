@@ -1,6 +1,6 @@
-# Cloner parity CLI v0.14.1
+# Cloner parity CLI v0.14.2
 
-The cloner CLI is the repository-owned v0.14.1 measurement spine. It keeps source
+The cloner CLI is the repository-owned v0.14.2 measurement spine. It keeps source
 and clone observations in immutable run directories under
 `docs/research/<site-key>/_parity/`.
 
@@ -100,6 +100,15 @@ stylesheet names them: both `prefers-color-scheme` values, both
 `prefers-reduced-motion` values, and touch input, which flips `hover: none` and
 `pointer: coarse`. Feature probes add colour summaries for the body, landmarks,
 and visible controls. Their differences are `responsive-feature-mismatch` gates.
+
+`--responsive` also checks every route at 390, 768, 1024, 1280, and 1440 px for
+horizontal overflow, a page whose content reaches past the right edge of the
+viewport. Each check records the page width, the viewport width, and the
+outermost elements that stick out; fixed elements and elements inside a
+scroller or a clipping box do not count. The measure output lists every
+overflow. `diff` gates clone overflow that the source does not have
+(`responsive-overflow`). Against an image source run, every clone overflow is
+a gate, because a screenshot shows a page that does not scroll sideways.
 
 Capture network assets and page associations with `--assets`:
 
@@ -293,7 +302,7 @@ npm run cloner -- analyze layout --site permitly-screens-caed4793
 npm run cloner -- fonts fit --site permitly-screens-caed4793 --samples fonts.samples.json
 npm run cloner -- icons match --site permitly-screens-caed4793 --boxes icons.boxes.json
 npm run cloner -- assets extract --site permitly-screens-caed4793 --page overview --box 280,88,688,388 --name street.jpg --kind photo --occlude "294,203,674,374"
-npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site permitly-screens-caed4793 --anchors anchors.json --reference-run "$IMAGE_RUN"
+npm run cloner -- measure --target clone --url http://127.0.0.1:3000 --site permitly-screens-caed4793 --anchors anchors.json --reference-run "$IMAGE_RUN" --responsive
 npm run cloner -- diff --site permitly-screens-caed4793 --source "$IMAGE_RUN" --clone "$CLONE_RUN"
 ```
 
@@ -309,6 +318,11 @@ npm run cloner -- diff --site permitly-screens-caed4793 --source "$IMAGE_RUN" --
 - `analyze`, `fonts`, `icons`, and `assets` write builder drafts beside the
   research docs, never into the run store. Every extracted asset is recorded as
   rights-unverified, and `rights` lists them for an image run.
+- `fonts fit` writes `fonts.json` and `TYPE_SCALE.md`: the best fit of every
+  sample, the winners by size (each family with the sizes and weights at which
+  it wins), and the font smoothing of every sample. Set the smoothing with
+  `--smoothing auto|antialiased` or with `smoothing` on a sample; only macOS
+  applies `-webkit-font-smoothing`.
 - `measure --anchors` captures each configured page of the clone at the
   reference's own device scale and evaluates the anchors. `diff` against an
   image run compares anchors and configured regions, reports live-only modules

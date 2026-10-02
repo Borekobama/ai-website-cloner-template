@@ -126,6 +126,15 @@ Start from `templates/fonts.samples.example.json`.
   separates weights.
 - Set `tracking` (em) on samples with letter spacing, such as uppercase
   overlines. Set `weightHint` when you can see the weight.
+- Candidates render with the browser's default font smoothing, as most
+  screenshots do. On macOS, `-webkit-font-smoothing: antialiased` (the
+  `antialiased` class of many Tailwind and Next.js layouts) draws thinner
+  strokes: in one clone, Geist 400 drew 13 % less ink than the screenshot it
+  was fitted to. Give fitted text the smoothing it was fitted with, or fit
+  again for the smoothing that the clone keeps: `"smoothing": "antialiased"`
+  on a sample, or `--smoothing antialiased` for all samples. `TYPE_SCALE.md`
+  records the smoothing of every sample. Only macOS applies the property, so
+  fit on macOS.
 - Read the score: in tests with known fonts, resampled and compressed like a
   presentation shot, the right font scored 0.02 to 0.04 at its exact
   whole-pixel size and the runner-up 0.10 or more. When the best score is
@@ -133,10 +142,15 @@ Start from `templates/fonts.samples.example.json`.
   probably not a candidate: try installed or commercial fonts with
   `--families local:<name>` or `--font-dir`, and record the closest match as a
   deviation.
-- Accept a family when it wins on most samples. Each sample in
-  `TYPE_SCALE.md` keeps its own winner, so a sans and a mono on one page both
-  appear. Snap fitted sizes to the type scale and check line heights with
-  `probe runs --axis y`.
+- Sample every step of the type scale, from captions to page titles, and
+  choose a family for each size range. Designs often set large text in one
+  family and interface text in another: in one clone, Geist fitted every
+  sample from 18 px up, and Inter every sample of 15 px and below. "Winners by
+  size" in `TYPE_SCALE.md` lists the sizes and weights at which each family
+  wins, so a display face, a text face, and a mono on one page all appear. The
+  family ranking averages over all samples and hides such a split, so do not
+  choose a family from the ranking alone. Snap fitted sizes to the type scale
+  and check line heights with `probe runs --axis y`.
 - A sample needs a plain background around its line. A box whose border
   crosses a photo, a pill, or another line gets a warning, and its result is
   not usable.
@@ -195,15 +209,19 @@ Screenshots usually show one width. Derive the rest from the system:
   falls under its smallest measured grid.
 - Tables and segmented filters scroll inside their card; the page never
   scrolls horizontally.
-- Check 390, 768, 1024, 1280, and 1440 px for horizontal overflow and overlap.
-  Record the breakpoints in `DESIGN.md`.
+- Check 390, 768, 1024, 1280, and 1440 px for horizontal overflow and overlap
+  on every route, not only on the routes in the screenshots.
+  `measure --target clone --responsive` checks these widths for horizontal
+  overflow on each measured route and names the outermost elements that stick
+  out. Its output lists every overflow, and `diff` against the image run makes
+  each one a gate. Record the breakpoints in `DESIGN.md`.
 
 ## 10. Image parity
 
 Write `anchors.json` from `templates/anchors.example.json`, then:
 
 ```bash
-node "$CLONER_LAUNCHER" measure --target clone --url <clone-origin> --site <key> --anchors anchors.json --reference-run <image-run>
+node "$CLONER_LAUNCHER" measure --target clone --url <clone-origin> --site <key> --anchors anchors.json --reference-run <image-run> --responsive
 node "$CLONER_LAUNCHER" diff --site <key> --source <image-run> --clone <clone-run>
 ```
 
@@ -219,7 +237,11 @@ node "$CLONER_LAUNCHER" diff --site <key> --source <image-run> --clone <clone-ru
   so landing on a neighbouring edge is a mismatch.
 - When neighbouring anchors all fail by the same amount, look for one cause
   above them, such as a row that is taller in the clone than in the
-  screenshot.
+  screenshot. A common cause is an `inline-flex` or `inline-block` element
+  inside a line of text, such as an icon with its label: it sits on the text
+  baseline, and the space below the baseline makes the line taller (in one
+  clone, a 16 px caption line grew to 19 px). Give the element
+  `vertical-align: top` (`align-top`), or make the line a flex container.
 - `mode: gate` anchors decide parity; `informational` anchors document it. Use
   gates for layout positions and sizes, and informational anchors for colours
   of antialiased text.
@@ -234,7 +256,8 @@ node "$CLONER_LAUNCHER" diff --site <key> --source <image-run> --clone <clone-ru
   page, as a visual aid, plus the anchor table. Cite `report.json` and run IDs.
 - Live-only modules (controls, classes, ARIA, head, and others) are reported as
   not applicable. Clone runtime errors still gate, because a screenshot shows a
-  working page.
+  working page. With `--responsive`, horizontal overflow also gates, because a
+  screenshot shows a page that does not scroll sideways.
 
 ## 11. Audits
 
@@ -259,8 +282,10 @@ Report, in addition to the general completion report:
   confidence, and cropped sides;
 - the anchor coverage, the largest anchor residual, and every failed gate;
 - extrapolated regions and known deviations from the screenshots;
-- the font and icon decisions with their scores, and the icon licence;
+- the font and icon decisions with their scores, the size range and font
+  smoothing of each font, and the icon licence;
 - every extracted asset with its rights status;
-- the `DESIGN.md` path, and the widths checked for responsive behaviour.
+- the `DESIGN.md` path, the widths checked for responsive behaviour, and the
+  clone run whose overflow checks passed on every route.
 
 Use `templates/PARITY_REPORT.template.md` for the parity report.

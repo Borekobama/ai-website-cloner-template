@@ -65,7 +65,11 @@ const LATE_HYDRATION_SCRIPT = `
     }, 1200);
 `;
 
-function pageDocument({ route, mode, repaired, port, deployVersion, shift = 0 }) {
+// A scroller and a fixed off-canvas drawer reach past a phone viewport without
+// widening the page; `.too-wide` widens it below 640 px.
+const RESPONSIVE_CSS = '<style>.scroll-strip { overflow-x: auto; } .scroll-strip-content { width: 900px; } .off-canvas { position: fixed; top: 0; left: 100%; width: 320px; } @media (max-width: 639px) { .too-wide { width: 640px; } }</style>';
+
+function pageDocument({ route, mode, repaired, port, deployVersion, shift = 0, overflow = false }) {
   const isClone = mode === 'clone';
   const cloneNeedsRepair = isClone && !repaired;
   const extraCloneClass = cloneNeedsRepair ? ' clone-only-runtime' : '';
@@ -130,7 +134,8 @@ function pageDocument({ route, mode, repaired, port, deployVersion, shift = 0 })
   ` : route === '/noise' ? `
     <main class="page-shell"><h1>Noisy timer</h1><p class="noise-value" id="noise-value">0</p><div data-control-region="noise-dead"><button class="fixture-control" data-control-class="dead" aria-label="Noisy dead button">Noisy dead button</button><button data-testid="duplicate-destructive-a" class="fixture-control" data-control-class="destructive" aria-label="Duplicate destructive">Duplicate destructive</button><button data-testid="duplicate-destructive-b" class="fixture-control" data-control-class="destructive" aria-label="Duplicate destructive">Duplicate destructive</button></div></main>
   ` : route === '/responsive' ? `
-    <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p><p class="responsive-hover-marker">Hover marker.</p></main>
+    <main class="page-shell" style="container-type: inline-size; container-name: shell"><h1>Responsive fixture</h1><p class="responsive-media-marker responsive-container-marker">Responsive marker.</p><p class="responsive-hover-marker">Hover marker.</p><div class="scroll-strip"><div class="scroll-strip-content">Wide content that scrolls inside its strip.</div></div>${overflow ? '<div class="too-wide">Too wide on phones.</div>' : ''}</main>
+    <div class="off-canvas" aria-hidden="true">Off-canvas drawer</div>
   ` : route === '/assets' ? `
     <main class="page-shell"><h1>Asset fixture</h1><img src="/fixture.svg" alt="Fixture asset"><img src="/fixture.svg" alt="Repeated fixture asset"><div style="background-image: url('/fixture.svg')">Asset reference.</div></main>
   ` : route === '/incomplete-css' ? `
@@ -146,7 +151,7 @@ function pageDocument({ route, mode, repaired, port, deployVersion, shift = 0 })
   ` : `
     <main class="page-shell"><h1>Destination</h1><p>Navigation reached its destination.</p></main>
   `;
-  const extraHead = `${route === '/forms' ? FORMS_CSS : ''}${route === '/incomplete-css' ? `<link rel="stylesheet" href="http://localhost:${port}/fixture-incomplete.css">` : ''}${isClone ? '<style>.motion-toggle { transform: none; rotate: 0deg; } .motion-toggle[data-state="open"] { transform: none; rotate: 90deg; }</style>' : ''}`;
+  const extraHead = `${route === '/forms' ? FORMS_CSS : ''}${route === '/responsive' ? RESPONSIVE_CSS : ''}${route === '/incomplete-css' ? `<link rel="stylesheet" href="http://localhost:${port}/fixture-incomplete.css">` : ''}${isClone ? '<style>.motion-toggle { transform: none; rotate: 0deg; } .motion-toggle[data-state="open"] { transform: none; rotate: 90deg; }</style>' : ''}`;
   const hydrationAttribute = route === '/unverified-hydration'
     ? ''
     : ` data-hydrated="${['/broken-hydration', '/late-hydration'].includes(route) ? 'false' : 'true'}"`;
@@ -189,8 +194,9 @@ function pageDocument({ route, mode, repaired, port, deployVersion, shift = 0 })
 }
 
 // `shift` moves the /forms content right by that many CSS pixels, for image
-// parity tests that need a measurably wrong clone.
-export function startFixtureServer({ mode = 'source', repaired = false, host = '0.0.0.0', port = 0, deployVersion = 'a1', shift = 0 } = {}) {
+// parity tests that need a measurably wrong clone. `overflow` adds a box to
+// /responsive that is wider than a phone viewport.
+export function startFixtureServer({ mode = 'source', repaired = false, host = '0.0.0.0', port = 0, deployVersion = 'a1', shift = 0, overflow = false } = {}) {
   if (!['source', 'clone'].includes(mode)) throw new Error(`Unsupported fixture mode: ${mode}`);
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -222,7 +228,7 @@ export function startFixtureServer({ mode = 'source', repaired = false, host = '
       return;
     }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    response.end(pageDocument({ route: requestUrl.pathname, mode, repaired, port: server.address()?.port ?? port, deployVersion, shift }));
+    response.end(pageDocument({ route: requestUrl.pathname, mode, repaired, port: server.address()?.port ?? port, deployVersion, shift, overflow }));
   });
   return new Promise((resolve, reject) => {
     const onError = (error) => {

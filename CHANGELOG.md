@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-10-02
+
+### Added
+- `measure --responsive` checks every route at 390, 768, 1024, 1280, and 1440 px for horizontal overflow and names the outermost elements that stick out; fixed elements and elements inside a scroller or a clipping box do not count. The measure output lists every overflow. `diff` reports a `responsive-overflow` gate for clone overflow that the source does not have, and against an image source run for every clone overflow, because a screenshot shows a page that does not scroll sideways
+- `fonts fit --smoothing auto|antialiased`, and `smoothing` on a sample, render the candidates with that `-webkit-font-smoothing`. `fonts.json` and `TYPE_SCALE.md` record the smoothing of every sample and the platform: only macOS applies the property, and there `antialiased` draws thinner strokes. In a clone with `antialiased` on the page, Geist 400 drew 13 % less ink than the screenshot it was fitted to
+- `fonts fit` lists the winners by size: each family that fits a sample best, with the sizes and weights at which it wins. A design that sets large text and interface text in different families shows as two size ranges
+
+### Changed
+- The screenshot-mode reference asks for samples across the whole type scale and a family for each size range, instead of the family that wins most samples; the family ranking averages over all samples and hides such a split. It also explains font smoothing, names a common cause of rows that are taller in the clone than in the screenshot (an inline-flex or inline-block element on the text baseline), and adds `--responsive` to image parity measurements
+
 ## [0.14.1] - 2026-10-02
 
 ### Fixed

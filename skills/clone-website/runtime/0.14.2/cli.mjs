@@ -59,7 +59,7 @@ import {
 } from './run-store.mjs';
 
 const HELP = `
-AI Website Cloner parity CLI v0.14.1
+AI Website Cloner parity CLI v0.14.2
 
 Usage:
   npm run cloner -- <command> [options]                     Repository copy
@@ -112,7 +112,8 @@ Measure options:
   --motion                      Capture declared motion/state evidence
   --motion-sample               Capture deterministic Web Animations API samples with --motion
   --dom-snapshot                Capture Chromium CDP DOMSnapshot evidence
-  --responsive                  Discover responsive CSS conditions and probe px thresholds and media features
+  --responsive                  Discover responsive CSS conditions and probe px thresholds and media features;
+                                check 390, 768, 1024, 1280, and 1440 px for horizontal overflow
   --assets                      Capture network assets and DOM/CSS asset associations
   --aria                        Capture accessibility-tree landmarks, headings, and role counts
   --head                        Capture head metadata: title, description, canonical, robots, hreflang, JSON-LD, social, icons
@@ -146,9 +147,11 @@ Analyze and asset options (image source runs):
   --occlude "<x0,y0,x1,y1;...>"  CSS boxes drawn over the asset, filled by diffusion
   --out <path>                   Output path (default: public/sites/<site>/<page>/<name>)
   --approved                     The user approved copying a logo or brand mark
-  --samples <path>               fonts fit: JSON list of { id, page, text, box, mode?, tracking?, weightHint? }
+  --samples <path>               fonts fit: JSON list of { id, page, text, box, mode?, tracking?, weightHint?, smoothing? }
   --families <a,b,...>           fonts fit: candidate families (local:<name> for installed fonts)
   --font-dir <path>              fonts fit: also try the font files in this directory
+  --smoothing auto|antialiased   fonts fit: -webkit-font-smoothing of samples without their own
+                                 (default: auto; only macOS applies it)
   --boxes <path>                 icons match: JSON list of { id, page, box, mode? }
   --sets <prefix,...>            icons match: Iconify sets (default: lucide,hugeicons,tabler,heroicons,ph)
 
@@ -650,6 +653,7 @@ function commandDiff(options) {
         responsiveRoutesCompared: report.responsiveCoverage.routesCompared ?? 0,
         responsiveMediaProbesCompared: report.responsiveCoverage.mediaProbesCompared ?? 0,
         responsiveLayoutProbesCompared: report.responsiveCoverage.layoutProbesCompared ?? 0,
+        responsiveOverflowChecksCompared: report.responsiveCoverage.overflowChecksCompared ?? 0,
         responsiveCoverageComplete: report.responsiveCoverage.complete === true,
       } : {}),
     },
@@ -1031,18 +1035,19 @@ async function commandFonts(options) {
   const native = nativePages(run);
   const samples = jsonList(options, 'samples', run).map((entry, index) => {
     if (!entry?.id || !entry.page || typeof entry.text !== 'string' || !entry.text) throw new Error(`Sample ${index + 1} needs id, page, text, and box`);
-    return { ...native(String(entry.page)), id: String(entry.id), text: entry.text, box: entry.box, mode: entry.mode ?? 'dark', tracking: entry.tracking ?? 0, weightHint: entry.weightHint ?? null };
+    return { ...native(String(entry.page)), id: String(entry.id), text: entry.text, box: entry.box, mode: entry.mode ?? 'dark', tracking: entry.tracking ?? 0, weightHint: entry.weightHint ?? null, smoothing: entry.smoothing };
   });
   const result = await fitFonts({
     samples,
     candidates: options.families ? familyCandidates(String(options.families)) : DEFAULT_FONT_CANDIDATES,
     fontDir: options['font-dir'] ? resolve(run.root, String(options['font-dir'])) : null,
+    smoothing: options.smoothing === undefined ? 'auto' : String(options.smoothing),
   });
   mkdirSync(run.researchDirectory, { recursive: true });
   const outputs = { fonts: join(run.researchDirectory, 'fonts.json'), typeScale: join(run.researchDirectory, 'TYPE_SCALE.md') };
   writeFileSync(outputs.fonts, `${JSON.stringify({ derived: true, sourceRunId: run.runId, ...result }, null, 2)}\n`);
   writeFileSync(outputs.typeScale, renderTypeScaleMarkdown(result));
-  jsonOutput({ runId: run.runId, siteKey: run.siteKey, derived: true, families: result.families.slice(0, 5), typeScale: result.typeScale, unavailable: result.unavailable, warnings: result.warnings, outputs });
+  jsonOutput({ runId: run.runId, siteKey: run.siteKey, derived: true, rendering: result.rendering, winners: result.winners, families: result.families.slice(0, 5), typeScale: result.typeScale, unavailable: result.unavailable, warnings: result.warnings, outputs });
 }
 
 async function commandIcons(options) {

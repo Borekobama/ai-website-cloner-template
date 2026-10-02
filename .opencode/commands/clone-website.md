@@ -357,7 +357,7 @@ For screenshot evidence, measure the clone against the image run with
 anchors, then diff:
 
 ```bash
-npm run cloner -- measure --target clone --url <clone-origin> --site <site-key> --anchors anchors.json --reference-run <image-run>
+npm run cloner -- measure --target clone --url <clone-origin> --site <site-key> --anchors anchors.json --reference-run <image-run> --responsive
 npm run cloner -- diff --site <site-key> --source <image-run> --clone <clone-run>
 ```
 
@@ -365,8 +365,8 @@ Anchors are named probes with tolerances. They run identically on the
 reference and on the clone, which is captured at the reference's own scale.
 Gate anchors decide parity. Regions compare configured CSS boxes; a region that
 covers most of the page cannot gate, and the page images in `report.html` are a
-visual aid, not a score. Live-only modules are reported as not applicable, and
-clone runtime errors still gate.
+visual aid, not a score. Live-only modules are reported as not applicable;
+clone runtime errors and, with `--responsive`, horizontal overflow still gate.
 
 Pass `--aria` to compare landmark and heading outlines (gate) plus accessible
 names and role counts (informational). Pass `--head` to compare title,
@@ -378,7 +378,8 @@ for informational LCP, CLS, and transfer-byte comparisons, and measure a
 production build when load metrics matter. Every route also records runtime
 errors: clone-only page errors and hydration failures are gates. `--responsive`
 also probes colour scheme, reduced motion, and touch input when stylesheets
-name them.
+name them, and checks every route at 390, 768, 1024, 1280, and 1440 px for
+horizontal overflow, naming the element that sticks out.
 
 Every route records a deployment fingerprint. `--resume-run` reuses a source
 route only while its fingerprint still matches, and `drift` reports which routes

@@ -1112,6 +1112,11 @@ export async function measureTarget({
           responsiveStylesheetsUnreadable: responsiveObservations.reduce((sum, { observation }) => sum + (observation.stylesheetCoverage?.unreadable ?? 0), 0),
           responsiveCoverageComplete: responsiveObservations.length === routeRecords.length
             && responsiveObservations.every(({ observation }) => observation.complete === true),
+          // Every route and width that scrolls sideways, with the element that
+          // sticks out furthest.
+          responsiveOverflow: responsiveObservations.flatMap(({ observation }) => (observation.overflow ?? [])
+            .filter((check) => check.overflowPx > 0)
+            .map((check) => ({ route: observation.route, width: check.requestedViewport.width, overflowPx: check.overflowPx, element: check.offenders?.[0] ?? null }))),
         } : {}),
         ...(assets ? {
           assetRoutesCaptured: assetObservations.length,

@@ -4,7 +4,7 @@ import { stableFindingId } from './ledger.mjs';
 import { compareMotionObservations } from './motion.mjs';
 import { compareDomSnapshotStructure, domSnapshotCoverage } from './dom-snapshot.mjs';
 import { compareVisualRegionImages, visualRoutePath } from './visual-regions.mjs';
-import { compareResponsiveEvidence, hydrateResponsiveEvidence } from './responsive.mjs';
+import { compareOverflowWithScreens, compareResponsiveEvidence, hydrateResponsiveEvidence } from './responsive.mjs';
 import { compareAssetEvidence, hydrateAssetEvidence } from './assets.mjs';
 import { compareAriaEvidence } from './aria.mjs';
 import { compareHeadEvidence } from './head.mjs';
@@ -492,7 +492,9 @@ export function selectControlAudit({ root = process.cwd(), siteKey, measurementR
 
 // Screenshot evidence has routes and pixels, nothing else. Controls, classes,
 // and the other live-only modules are not applicable rather than missing.
-const IMAGE_NOT_APPLICABLE = ['controls', 'classes', 'visual-regions', 'motion', 'dom-snapshot', 'responsive', 'assets', 'aria', 'head', 'performance'];
+// Horizontal overflow still applies: a screenshot shows a page that does not
+// scroll sideways.
+const IMAGE_NOT_APPLICABLE = ['controls', 'classes', 'visual-regions', 'motion', 'dom-snapshot', 'responsive-probes', 'assets', 'aria', 'head', 'performance'];
 
 function compareImageRuns({ root, siteKey, sourceManifest, cloneManifest, sourceRunId, cloneRunId, reportRunId }) {
   const sourceRoutes = readJson(root, siteKey, sourceRunId, 'measurements/routes.json');
@@ -505,6 +507,8 @@ function compareImageRuns({ root, siteKey, sourceManifest, cloneManifest, source
     finding.evidence.source = { ...finding.evidence.source, locator: finding.evidence.source.locator.replace(/\/runtimeErrors$/u, '') };
   }
   const imageParity = compareImageParity({ root, siteKey, sourceRunId, cloneRunId, cloneManifest, reportRunId });
+  const cloneResponsive = hydrateResponsiveEvidence({ root, siteKey, runId: cloneRunId, index: readOptionalJson(root, siteKey, cloneManifest, 'measurements/responsive.json') });
+  const overflowComparison = compareOverflowWithScreens(sourceRoutes, cloneResponsive, sourceRunId, cloneRunId);
   return {
     schemaVersion: 1,
     semantics: FINDING_SEMANTICS,
@@ -512,10 +516,11 @@ function compareImageRuns({ root, siteKey, sourceManifest, cloneManifest, source
     cloneRunId,
     evidence: 'image',
     supportedKinds: [...SUPPORTED_KINDS],
-    comparatorCoverage: [...routeComparison.comparatorCoverage, ...runtimeErrorComparison.comparatorCoverage, ...imageParity.comparatorCoverage],
-    findings: [...routeComparison.findings, ...runtimeErrorComparison.findings, ...imageParity.findings],
+    comparatorCoverage: [...routeComparison.comparatorCoverage, ...runtimeErrorComparison.comparatorCoverage, ...imageParity.comparatorCoverage, ...overflowComparison.comparatorCoverage],
+    findings: [...routeComparison.findings, ...runtimeErrorComparison.findings, ...imageParity.findings, ...overflowComparison.findings],
     imageParityCoverage: imageParity.coverage,
     imageParity: { pages: imageParity.pages },
+    ...(overflowComparison.coverage.configured ? { responsiveCoverage: overflowComparison.coverage } : {}),
     runtimeErrorCoverage: { ...runtimeErrorComparison.coverage, sourceAssumption: 'screenshots show working pages without errors' },
     notApplicable: IMAGE_NOT_APPLICABLE,
     visualArtifacts: imageParity.visualArtifacts,

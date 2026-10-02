@@ -35,7 +35,8 @@ The column templates that the reference screens use.
 ### 2.4 Responsive behaviour
 Breakpoints and what changes at each (container queries on the main area,
 drawer below a width, tables that scroll inside their card). List the widths
-that were checked: 390, 768, 1024, 1280, 1440.
+that were checked: 390, 768, 1024, 1280, 1440, and the `measure --responsive`
+clone run that found no horizontal overflow on any route.
 
 ## 3. Colour
 
@@ -58,7 +59,9 @@ One mapping from status to colour and label, used everywhere.
 
 ## 4. Typography
 
-Family and source (from `fonts fit`, with scores), then the type scale:
+Family and source for each size range (from `fonts fit`, with scores), the
+font smoothing that the fit assumed (`auto` or `antialiased`), then the type
+scale:
 
 | Token | Size / line height / weight | Tracking | Use |
 |---|---|---|---|

@@ -3,9 +3,13 @@ import { redactForPersistence, safeUrl } from './redact.mjs';
 
 export const RESPONSIVE_SCHEMA_VERSION = 1;
 export const RESPONSIVE_PROBE_BASELINE = Object.freeze({ width: 1280, height: 720 });
+// Widths at which every route is checked for horizontal overflow: a phone, a
+// tablet, and three desktop widths.
+export const OVERFLOW_CHECK_WIDTHS = Object.freeze([390, 768, 1024, 1280, 1440]);
 
 const CONTROL_LIMIT = 32;
 const LANDMARK_LIMIT = 24;
+const OFFENDER_LIMIT = 5;
 const AXIS_ORDER = new Map([['width', 0], ['height', 1]]);
 
 export function normalizeCssCondition(value) {
@@ -377,6 +381,58 @@ async function captureProbe(page, probe, mediaConditions, cdp = null) {
   }
 }
 
+// A page scrolls sideways when its content reaches past the right edge of the
+// viewport. The check names the outermost elements that do. Fixed elements,
+// and elements inside a scroller or a clipping box, do not widen the page.
+async function captureOverflow(page, requestedViewport) {
+  try {
+    await page.setViewportSize(requestedViewport);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const observation = await page.evaluate((limit) => {
+      const root = document.documentElement;
+      const { clientWidth, scrollWidth } = root;
+      const rootOverflowX = getComputedStyle(root).overflowX;
+      const viewportOverflowX = rootOverflowX === 'visible' && document.body ? getComputedStyle(document.body).overflowX : rootOverflowX;
+      if (scrollWidth <= clientWidth || !document.body) return { scrollWidth, clientWidth, overflowPx: 0, viewportOverflowX, offenders: [] };
+      const contained = (element) => {
+        for (let node = element; node && node !== document.body; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          if (style.position === 'fixed' || (node !== element && style.overflowX !== 'visible')) return true;
+        }
+        return false;
+      };
+      const sticking = new Set([...document.body.querySelectorAll('*')].filter((element) => {
+        const box = element.getBoundingClientRect();
+        return box.width > 0 && box.right > clientWidth + 0.5 && !contained(element);
+      }));
+      const round = (value) => Math.round(value * 100) / 100;
+      const offenders = [...sticking]
+        .filter((element) => {
+          for (let node = element.parentElement; node; node = node.parentElement) if (sticking.has(node)) return false;
+          return true;
+        })
+        .map((element) => {
+          const box = element.getBoundingClientRect();
+          return {
+            tag: element.tagName.toLowerCase(),
+            id: element.id ? element.id.slice(0, 120) : null,
+            className: (element.getAttribute('class') ?? '').replace(/\s+/gu, ' ').trim().slice(0, 160),
+            name: (element.getAttribute('aria-label') || element.getAttribute('title') || element.textContent || '').replace(/\s+/gu, ' ').trim().slice(0, 80),
+            left: round(box.left),
+            right: round(box.right),
+            width: round(box.width),
+          };
+        })
+        .sort((left, right) => right.right - left.right)
+        .slice(0, limit);
+      return { scrollWidth, clientWidth, overflowPx: scrollWidth - clientWidth, viewportOverflowX, offenders };
+    }, OFFENDER_LIMIT);
+    return { requestedViewport, status: 'captured', ...observation };
+  } catch (error) {
+    return { requestedViewport, status: 'failed', error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function failedResponsiveObservation(route, error) {
   return redactForPersistence({
     schemaVersion: RESPONSIVE_SCHEMA_VERSION,
@@ -389,8 +445,10 @@ function failedResponsiveObservation(route, error) {
     conditions: { media: [], container: [] },
     thresholds: [],
     probes: [],
+    overflow: [],
     discoveryComplete: false,
     probeCoverage: { expected: 0, captured: 0, failed: 0 },
+    overflowCoverage: { expected: 0, captured: 0, failed: 0 },
     complete: false,
     failure: error instanceof Error ? error.message : String(error),
   });
@@ -417,6 +475,10 @@ export async function captureResponsive(page, { route } = {}) {
     } finally {
       await cdp?.detach().catch(() => {});
     }
+    const overflow = [];
+    for (const width of OVERFLOW_CHECK_WIDTHS) {
+      overflow.push(await captureOverflow(page, { width, height: RESPONSIVE_PROBE_BASELINE.height }));
+    }
 
     let restoreFailure = null;
     if (originalViewport?.width && originalViewport?.height) {
@@ -439,6 +501,11 @@ export async function captureResponsive(page, { route } = {}) {
       captured: probes.filter((probe) => probe.status === 'captured').length,
       failed: probes.filter((probe) => probe.status === 'failed').length,
     };
+    const overflowCoverage = {
+      expected: overflow.length,
+      captured: overflow.filter((check) => check.status === 'captured').length,
+      failed: overflow.filter((check) => check.status === 'failed').length,
+    };
     const evidence = redactForPersistence({
       schemaVersion: RESPONSIVE_SCHEMA_VERSION,
       kind: 'responsive-observation',
@@ -451,10 +518,12 @@ export async function captureResponsive(page, { route } = {}) {
       conditions: { media, container },
       thresholds,
       probes,
+      overflow,
       discoveryComplete,
       probeCoverage,
+      overflowCoverage,
       restoreFailure,
-      complete: discoveryComplete && probeCoverage.failed === 0 && restoreFailure === null,
+      complete: discoveryComplete && probeCoverage.failed === 0 && overflowCoverage.failed === 0 && restoreFailure === null,
     });
     return { ...evidence, fingerprint: sha256(canonicalJson(evidence)) };
   } catch (error) {
@@ -483,6 +552,8 @@ export function responsiveIndexEntry(observation, artifactPath) {
     probesCaptured: observation.probeCoverage?.captured ?? 0,
     probeFailures: observation.probeCoverage?.failed ?? 0,
     featureProbes: (observation.probes ?? []).filter((probe) => probe.features).length,
+    overflowChecks: observation.overflowCoverage?.captured ?? 0,
+    overflowWidths: (observation.overflow ?? []).filter((check) => check.overflowPx > 0).map((check) => check.requestedViewport.width),
   };
 }
 
@@ -537,6 +608,44 @@ function responsiveComparator(evidenceClass, dimension, mode) {
   return { instrument: 'responsive', evidenceClass, dimension, mode };
 }
 
+function overflowKey(check) {
+  const viewport = check?.requestedViewport ?? {};
+  return `${viewport.width}x${viewport.height}`;
+}
+
+function overflowSummary(check) {
+  return { scrollWidth: check.scrollWidth, clientWidth: check.clientWidth, overflowPx: check.overflowPx, viewportOverflowX: check.viewportOverflowX };
+}
+
+// Compares each overflow check of a clone route with what the source shows at
+// the same viewport. `source(check)` returns { overflows, observed, evidence },
+// or null when the source has no captured check there.
+function compareOverflowChecks(route, cloneRoute, cloneRunId, source) {
+  const comparator = responsiveComparator('responsive-overflow', 'overflow', 'gate');
+  const findings = [];
+  const comparatorCoverage = [];
+  let compared = 0;
+  for (const [index, check] of (cloneRoute.observation.overflow ?? []).entries()) {
+    const subject = { route, viewport: check.requestedViewport };
+    const sourceCheck = check.status === 'captured' ? source(check) : null;
+    comparatorCoverage.push({ comparator, subject, complete: sourceCheck !== null });
+    if (!sourceCheck) continue;
+    compared += 1;
+    if (check.overflowPx > 0 && !sourceCheck.overflows) {
+      findings.push({
+        category: 'responsive-overflow',
+        subject,
+        status: 'open',
+        policy: { dimension: 'overflow', mode: 'gate' },
+        comparator,
+        observed: { source: sourceCheck.observed, clone: { ...overflowSummary(check), offenders: check.offenders ?? [] } },
+        evidence: { source: sourceCheck.evidence, clone: routeEvidence(cloneRoute, cloneRunId, `#/overflow/${index}`) },
+      });
+    }
+  }
+  return { findings, comparatorCoverage, compared };
+}
+
 export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId) {
   if (!source && !clone) {
     return { findings: [], comparatorCoverage: [], coverage: { configured: false, complete: true, routesCompared: 0, mediaProbesCompared: 0 } };
@@ -575,6 +684,7 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
   let containerConditionsCompared = 0;
   let mediaProbesCompared = 0;
   let layoutProbesCompared = 0;
+  let overflowChecksCompared = 0;
 
   for (const route of routes) {
     const sourceRoute = sourceRoutes.get(route);
@@ -716,6 +826,20 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
       }
     }
 
+    const sourceOverflow = new Map((sourceObservation.overflow ?? []).map((check, index) => [overflowKey(check), { check, index }]));
+    const overflowComparison = compareOverflowChecks(route, cloneRoute, cloneRunId, (check) => {
+      const entry = sourceOverflow.get(overflowKey(check));
+      if (entry?.check.status !== 'captured') return null;
+      return {
+        overflows: entry.check.overflowPx > 0,
+        observed: overflowSummary(entry.check),
+        evidence: routeEvidence(sourceRoute, sourceRunId, `#/overflow/${entry.index}`),
+      };
+    });
+    findings.push(...overflowComparison.findings);
+    comparatorCoverage.push(...overflowComparison.comparatorCoverage);
+    overflowChecksCompared += overflowComparison.compared;
+
     const coverageComparator = responsiveComparator('responsive-coverage', 'complete', 'informational');
     const routeComplete = sourceObservation.complete === true && cloneObservation.complete === true;
     comparatorCoverage.push({ comparator: coverageComparator, subject: { route }, complete: routeComplete });
@@ -751,6 +875,41 @@ export function compareResponsiveEvidence(source, clone, sourceRunId, cloneRunId
       containerConditionsCompared,
       mediaProbesCompared,
       layoutProbesCompared,
+      overflowChecksCompared,
+    },
+  };
+}
+
+// A screenshot shows a page that does not scroll sideways, so every clone
+// overflow is new. The other responsive probes have no screenshot counterpart.
+export function compareOverflowWithScreens(sourceRoutes, clone, sourceRunId, cloneRunId) {
+  if (!clone) return { findings: [], comparatorCoverage: [], coverage: { configured: false, complete: true, routesChecked: 0, overflowChecksCompared: 0 } };
+  const screens = new Map((sourceRoutes?.routes ?? []).map((record, index) => [record.route, index]));
+  const assumption = 'screenshots show pages that do not scroll sideways';
+  const findings = [];
+  const comparatorCoverage = [];
+  let overflowChecksCompared = 0;
+  const cloneRoutes = responsiveRouteMap(clone);
+  for (const [route, cloneRoute] of cloneRoutes) {
+    const screen = screens.get(route);
+    const comparison = compareOverflowChecks(route, cloneRoute, cloneRunId, () => ({
+      overflows: false,
+      observed: { assumption },
+      evidence: screen === undefined ? null : { runId: sourceRunId, artifact: 'measurements/routes.json', locator: `#/routes/${screen}` },
+    }));
+    findings.push(...comparison.findings);
+    comparatorCoverage.push(...comparison.comparatorCoverage);
+    overflowChecksCompared += comparison.compared;
+  }
+  return {
+    findings,
+    comparatorCoverage,
+    coverage: {
+      configured: true,
+      complete: comparatorCoverage.length > 0 && comparatorCoverage.every((entry) => entry.complete),
+      routesChecked: cloneRoutes.size,
+      overflowChecksCompared,
+      sourceAssumption: assumption,
     },
   };
 }

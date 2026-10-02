@@ -392,6 +392,25 @@ async function main() {
     assert.deepEqual(featureProbes.map((probe) => probe.features), [{ colorScheme: 'light' }, { colorScheme: 'dark' }, { touch: false }, { touch: true }]);
     assert.equal(featureProbes.find((probe) => probe.features.colorScheme === 'dark').mediaMatches.find((entry) => entry.condition === '(prefers-color-scheme:dark)')?.matches, true);
     assert.equal(featureProbes.find((probe) => probe.features.touch === true).mediaMatches.find((entry) => entry.condition === '(hover:none)')?.matches, true);
+    // Overflow checks: a scroller and a fixed off-canvas drawer do not widen
+    // the page, and a clone with a box wider than a phone is a gate that names
+    // the box.
+    const cloneResponsiveIndex = JSON.parse(readArtifact(parityRoot, SITE, responsiveCloneMeasurement.json.runId, 'measurements/responsive.json').toString('utf8'));
+    const cloneResponsiveRoute = JSON.parse(readArtifact(parityRoot, SITE, responsiveCloneMeasurement.json.runId, cloneResponsiveIndex.routes[0].artifactPath).toString('utf8'));
+    assert.deepEqual(cloneResponsiveRoute.overflow.map((check) => [check.requestedViewport.width, check.status, check.overflowPx]), [[390, 'captured', 0], [768, 'captured', 0], [1024, 'captured', 0], [1280, 'captured', 0], [1440, 'captured', 0]]);
+    const overflowing = await startFixtureServer({ mode: 'clone', repaired: true, overflow: true });
+    try {
+      const overflowMeasurement = await runCli(parityRoot, ['measure', '--target', 'clone', '--url', overflowing.url, '--routes', '/responsive', '--responsive', ...commonArgs(parityRoot, policyPath)]);
+      assert.equal(overflowMeasurement.code, 0, overflowMeasurement.stderr);
+      assert.deepEqual(overflowMeasurement.json.coverage.measurement.responsiveOverflow.map(({ route, width, element }) => [route, width, element.className]), [['/responsive', 390, 'too-wide']]);
+      const overflowDiff = await runCli(parityRoot, ['diff', '--source', responsiveSourceMeasurement.json.runId, '--clone', overflowMeasurement.json.runId, ...commonArgs(parityRoot, policyPath)]);
+      assert.equal(overflowDiff.code, 0, overflowDiff.stderr);
+      const overflowFindings = overflowDiff.json.findings.filter((finding) => finding.category === 'responsive-overflow');
+      assert.deepEqual(overflowFindings.map((finding) => [finding.status, finding.subject.viewport.width]), [['open', 390]]);
+      assert.deepEqual(overflowFindings[0].observed.clone.offenders.map((offender) => offender.className), ['too-wide']);
+    } finally {
+      await overflowing.close();
+    }
 
     const assetSourceMeasurement = await runCli(parityRoot, [
       'measure', '--target', 'source', '--url', source.url, '--routes', '/assets', '--profile', profile, '--inventory', '--assets',
